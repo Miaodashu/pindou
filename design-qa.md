@@ -60,6 +60,40 @@ No actionable P0, P1, or P2 visual or interaction differences remain. The denser
 
 final result: passed
 
+## 2026-10-19：第三版 Soft UI Crafted Gallery
+
+- Source visual truth: `docs/changes/pindou-core/soft-ui-crafted-gallery-reference.png`
+- Implementation screenshot: `docs/changes/pindou-core/soft-ui-crafted-gallery-implementation.png`
+- Comparison viewport: 1536 × 1024 CSS pixels at DPR 1.
+- Responsive validation: 375 × 812、768 × 900、1024 × 900、1536 × 1024。
+
+### 视觉对照
+
+- 首屏采用与参考稿一致的“横幅摄影 + 左侧叠字 + 右侧能力轨”结构；柴犬拼豆成品、图纸卡与材料场景均使用真实位图素材，没有用 CSS 图形替代。
+- 根据最终反馈移除了文案后方的独立白色面板。摄影素材现在贯穿文案与作品区域，左侧只使用由暖白逐渐透明的轻遮罩保证文字可读性，不再出现硬切背景。
+- Cormorant Garamond 用于展示标题，Montserrat 用于正文与控制；主色 `#E8B4B8`、鼠尾草绿 `#A8D5BA`、金色 `#D4AF37` 和暖白 `#FFF5F5` 均映射为全局设计令牌。
+- CTA 使用金色底与炭灰文字，避免白字在金色上的低对比；焦点环、键盘语义、图片替代文本与 `prefers-reduced-motion` 均已实现。
+- 图标统一来自 Lucide Vue。撤销、重做、绘制、橡皮、取色、选区、缩放及临摹方向均不再使用字符或表情符号充当图标。
+
+### 响应式与交互
+
+- 1536 / 1024：横幅叠字保持两行标题，能力轨固定在右侧；1024 下横幅缩短并加强自然遮罩，文字与成品主体均清晰。
+- 768 / 375：文案与摄影素材改为上下排列，避免窄屏上文字覆盖作品；所有断点 `document.scrollWidth === innerWidth`，无页面级横向溢出。
+- 手机编辑器优先展示画布与工具栏，命令按钮自动换行，画布在自身容器内滚动。
+- 首页主 CTA 已在应用内浏览器实际点击，成功进入 `/editor`；路由切换会回到页面顶部。
+- 为原生 Canvas 增加滚动边距，修复用户从长色卡跳回画布时粘性命令栏可能遮住画布点击点的问题。
+
+### 修复记录
+
+- P1：初版把文案和横幅拆成两个独立色块，素材过渡生硬。已改为文字直接叠在同一张摄影素材上，并以轻透明遮罩自然过渡。
+- P1：访问深层色卡后回到画布，粘性顶部栏可能拦截画布顶部操作。已通过 Canvas 滚动边距修复，并用独立 Chromium 用例复验通过。
+- P2：1024 宽度标题曾出现孤字换行。已固定为两行展示，并在 375 宽度单独缩放字号。
+- P2：路由切换继承长页面滚动位置。已增加路由顶部复位。
+
+未发现剩余 P0、P1 或 P2 视觉、可访问性或交互问题。
+
+final result: passed
+
 ## 2026-10-19：Mard、豆仓、垫图与生成体验优化
 
 - Product reference: `https://archmays.github.io/mard-bead-generator/#top`

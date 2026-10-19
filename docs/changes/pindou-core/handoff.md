@@ -20,6 +20,9 @@
 - 完成 Mard 色系筛选、当前颜色摘要和限高滚动色板，避免 221 色导致页面过长。
 - 完成豆仓库存、使用、剩余、缺豆统计与 UTF-8 BOM 用量 CSV 导出。
 - 完成临摹垫图上传、显示、透明度、格级偏移与 IndexedDB 持久化；用 ArrayBuffer 规避 WebKit Blob 存储失败。
+- 完成第三版 Crafted Gallery 首页：横幅摄影自然贯穿文案与作品区，文字直接叠图，右侧能力轨、项目介绍和编辑器预览均已落地。
+- 完成 Soft UI 设计令牌、Cormorant Garamond / Montserrat 本地字体、Lucide 图标、键盘焦点与 reduced-motion 支持。
+- 完成 375 / 768 / 1024 / 1536 响应式验收，并修复路由滚动复位与粘性命令栏遮挡 Canvas 顶部操作的问题。
 
 ## Current implementation state
 
@@ -31,6 +34,7 @@
 - `npm run e2e`：通过，Chromium/WebKit 共 20 个场景。
 - WebKit 垫图持久化专项回归：连续 3 次通过。
 - 浏览器手工验收：Mard 默认色卡、三种生成策略、尺寸预估、色块图/施工图/成品预览、豆仓和工具栏布局正常。
+- 应用内浏览器视觉验收：首屏参考稿与 1536 × 1024 实现截图同屏对照；375 / 768 / 1024 / 1536 无页面级横向溢出。
 
 ## Remaining work
 
