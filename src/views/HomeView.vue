@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { ArrowRight, Grid3X3, Heart, Image, ShieldCheck } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
+
+const heroImage = `${import.meta.env.BASE_URL}images/crafted-gallery-hero.png`
+const editorPreview = `${import.meta.env.BASE_URL}images/editor-preview.png`
 </script>
 
 <template>
@@ -30,7 +33,7 @@ import { RouterLink } from 'vue-router'
 
       <figure class="hero-visual">
         <img
-          src="/images/crafted-gallery-hero.png"
+          :src="heroImage"
           alt="木质画框中的柴犬拼豆作品、图纸卡片与拼豆材料"
           width="1600"
           height="820"
@@ -105,7 +108,7 @@ import { RouterLink } from 'vue-router'
       </div>
       <div class="editor-preview">
         <img
-          src="/images/editor-preview.png"
+          :src="editorPreview"
           alt="拼豆图纸编辑器界面，包含图片转换、画布、豆仓与临摹面板"
         />
       </div>

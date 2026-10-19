@@ -15,6 +15,8 @@ const emit = defineEmits<{
   install: [palette: BeadPalette]
 }>()
 
+const paletteTemplateUrl = `${import.meta.env.BASE_URL}examples/palette-template.json`
+
 const input = ref<HTMLInputElement>()
 const errorMessage = ref('')
 const query = ref('')
@@ -91,7 +93,7 @@ async function importPalette(event: Event) {
           使用 Mard 221
         </button>
         <button type="button" @click="input?.click()">导入 JSON</button>
-        <a href="/examples/palette-template.json" download>下载模板</a>
+        <a :href="paletteTemplateUrl" download>下载模板</a>
       </div>
       <input
         ref="input"
