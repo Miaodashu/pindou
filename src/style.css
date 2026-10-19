@@ -1,0 +1,200 @@
+:root {
+  color: #2d3436;
+  background: #fff5f5;
+  font-family: 'Montserrat', ui-sans-serif, system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --background: #fff5f5;
+  --surface: #fffdfd;
+  --surface-muted: #f7ecec;
+  --text: #2d3436;
+  --text-muted: #606668;
+  --border: #e7d9d9;
+  --rose: #e8b4b8;
+  --rose-pale: #f8e8e9;
+  --rose-strong: #924d56;
+  --sage: #a8d5ba;
+  --sage-pale: #e9f2ec;
+  --sage-dark: #35684e;
+  --gold: #d4af37;
+  --gold-dark: #8a6c13;
+  --accent: #bd7d84;
+  --accent-strong: #87444d;
+  --shadow-small: 0 8px 24px rgb(77 45 50 / 8%);
+  --shadow-medium: 0 14px 38px rgb(77 45 50 / 11%);
+  --shadow-large: 0 28px 72px rgb(77 45 50 / 13%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  color: var(--text);
+  background: var(--background);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+a,
+label[for],
+select,
+input[type='checkbox'],
+input[type='range'],
+input[type='file'] {
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease,
+    opacity 160ms ease;
+}
+
+:focus-visible {
+  outline: 3px solid rgb(146 77 86 / 38%);
+  outline-offset: 3px;
+}
+
+img {
+  max-width: 100%;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-header {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 78px;
+  padding: 0 clamp(22px, 4vw, 64px);
+  border-bottom: 1px solid rgb(157 79 88 / 12%);
+  background: rgb(255 250 250 / 92%);
+  backdrop-filter: blur(14px);
+}
+
+.brand {
+  display: grid;
+  gap: 1px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.brand span {
+  font-family: 'Cormorant Garamond', 'Noto Serif SC', serif;
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+}
+
+.brand small {
+  color: var(--rose-strong);
+  font-size: 0.48rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+nav {
+  display: flex;
+  gap: clamp(18px, 3vw, 38px);
+}
+
+nav a {
+  position: relative;
+  padding: 9px 0;
+  color: var(--text-muted);
+  font-size: 0.77rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+nav a::after {
+  position: absolute;
+  right: 0;
+  bottom: 2px;
+  left: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--rose-strong);
+  content: '';
+  opacity: 0;
+  transform: scaleX(0.45);
+}
+
+nav a:hover,
+nav a.router-link-active {
+  color: var(--text);
+}
+
+nav a.router-link-active::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+@media (max-width: 520px) {
+  .app-header {
+    min-height: 68px;
+    padding: 0 18px;
+  }
+
+  .brand span {
+    font-size: 1.22rem;
+  }
+
+  .brand small {
+    display: none;
+  }
+
+  nav {
+    gap: 15px;
+  }
+
+  nav a {
+    font-size: 0.7rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

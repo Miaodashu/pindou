@@ -1,0 +1,735 @@
+<script setup lang="ts">
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+
+import {
+  lassoSelection,
+  rectangleSelection,
+  type GridPoint,
+  type SelectionMode,
+} from '@/core/selection'
+import type { BeadPalette } from '@/domain/palette/types'
+import type { CellEdit, PatternDocument } from '@/domain/pattern/types'
+import type { EditorTool } from './editorStore'
+
+type PatternViewMode = 'construction' | 'color-block' | 'bead-preview'
+
+const props = defineProps<{
+  pattern: PatternDocument
+  palette: BeadPalette
+  revision: number
+  zoom: number
+  tool: EditorTool
+  selectedColor: number
+  viewMode: PatternViewMode
+  showGrid: boolean
+  showGuides: boolean
+  selection: number[]
+  selectionMode: SelectionMode
+  tracingImageUrl: string
+  tracingVisible: boolean
+  tracingOpacity: number
+  tracingOffsetX: number
+  tracingOffsetY: number
+}>()
+
+const emit = defineEmits<{
+  apply: [edits: CellEdit[]]
+  pickColor: [colorIndex: number]
+  selectionChange: [indexes: number[]]
+}>()
+
+const canvas = ref<HTMLCanvasElement>()
+const draft = new Map<number, number>()
+let drawing = false
+let lastCell: { x: number; y: number } | undefined
+let selecting = false
+let selectionStart: GridPoint | undefined
+let selectionEnd: GridPoint | undefined
+let lassoPoints: GridPoint[] = []
+let tracingImage: HTMLImageElement | undefined
+let tracingLoadToken = 0
+
+const BASE_CELL_SIZE = 25
+const AXIS_SIZE = 30
+const cellSize = computed(() => BASE_CELL_SIZE * props.zoom)
+const coordinateStep = computed(() => {
+  if (cellSize.value >= 18) return 1
+  if (cellSize.value >= 11) return 2
+  return 5
+})
+const xCoordinates = computed(() =>
+  Array.from(
+    { length: Math.ceil(props.pattern.width / coordinateStep.value) },
+    (_, index) => index * coordinateStep.value + 1,
+  ),
+)
+const yCoordinates = computed(() =>
+  Array.from(
+    { length: Math.ceil(props.pattern.height / coordinateStep.value) },
+    (_, index) => index * coordinateStep.value + 1,
+  ),
+)
+const boardStyle = computed(() => ({
+  width: `${props.pattern.width * cellSize.value + AXIS_SIZE}px`,
+  height: `${props.pattern.height * cellSize.value + AXIS_SIZE}px`,
+}))
+
+function drawGrid(
+  target: HTMLCanvasElement,
+  cellSize: number,
+  pixelRatio: number,
+  viewMode: PatternViewMode,
+  showGrid: boolean,
+  showGuides: boolean,
+  draftCells?: ReadonlyMap<number, number>,
+) {
+  const logicalWidth = props.pattern.width * cellSize
+  const logicalHeight = props.pattern.height * cellSize
+  target.width = Math.max(1, Math.round(logicalWidth * pixelRatio))
+  target.height = Math.max(1, Math.round(logicalHeight * pixelRatio))
+  target.style.width = `${logicalWidth}px`
+  target.style.height = `${logicalHeight}px`
+
+  const context = target.getContext('2d')
+  if (!context) return
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+  context.fillStyle = '#fffdf9'
+  context.fillRect(0, 0, logicalWidth, logicalHeight)
+
+  for (let index = 0; index < props.pattern.cells.length; index += 1) {
+    const colorIndex = draftCells?.get(index) ?? props.pattern.cells[index] ?? 0
+    if (colorIndex <= 0) continue
+    const color = props.palette.colors[colorIndex - 1]
+    if (!color) continue
+    const x = (index % props.pattern.width) * cellSize
+    const y = Math.floor(index / props.pattern.width) * cellSize
+    if (viewMode === 'color-block') {
+      context.fillStyle = color.hex
+      context.fillRect(x, y, cellSize, cellSize)
+    } else if (viewMode === 'construction') {
+      const inset = Math.max(1.2, cellSize * 0.11)
+      context.beginPath()
+      context.arc(
+        x + cellSize / 2,
+        y + cellSize / 2,
+        Math.max(1, cellSize / 2 - inset),
+        0,
+        Math.PI * 2,
+      )
+      context.fillStyle = color.hex
+      context.fill()
+      context.strokeStyle = 'rgb(32 28 24 / 20%)'
+      context.lineWidth = 0.7
+      context.stroke()
+
+      if (cellSize >= 24) {
+        const brightness =
+          (color.rgb.r * 299 + color.rgb.g * 587 + color.rgb.b * 114) / 1000
+        context.fillStyle = brightness < 135 ? '#ffffff' : '#251e18'
+        context.font = `700 ${Math.max(8, cellSize * 0.34)}px ui-sans-serif, system-ui`
+        context.textAlign = 'center'
+        context.textBaseline = 'middle'
+        context.fillText(color.symbol, x + cellSize / 2, y + cellSize / 2 + 0.5)
+      }
+    } else {
+      const centerX = x + cellSize / 2
+      const centerY = y + cellSize / 2
+      const radius = Math.max(1, cellSize * 0.43)
+      context.save()
+      context.shadowColor = 'rgb(43 31 23 / 22%)'
+      context.shadowBlur = Math.max(1, cellSize * 0.08)
+      context.shadowOffsetY = Math.max(0.5, cellSize * 0.045)
+      context.beginPath()
+      context.arc(centerX, centerY, radius, 0, Math.PI * 2)
+      context.fillStyle = color.hex
+      context.fill()
+      context.shadowColor = 'transparent'
+      context.strokeStyle = 'rgb(32 28 24 / 24%)'
+      context.lineWidth = Math.max(0.6, cellSize * 0.035)
+      context.stroke()
+
+      context.beginPath()
+      context.arc(
+        centerX - radius * 0.2,
+        centerY - radius * 0.24,
+        radius * 0.52,
+        Math.PI * 1.08,
+        Math.PI * 1.68,
+      )
+      context.strokeStyle = 'rgb(255 255 255 / 42%)'
+      context.lineWidth = Math.max(0.8, cellSize * 0.055)
+      context.stroke()
+
+      context.beginPath()
+      context.arc(centerX, centerY, radius * 0.22, 0, Math.PI * 2)
+      context.fillStyle = '#fffdf9'
+      context.fill()
+      context.strokeStyle = 'rgb(32 28 24 / 25%)'
+      context.lineWidth = Math.max(0.6, cellSize * 0.03)
+      context.stroke()
+      context.restore()
+    }
+  }
+
+  if (viewMode === 'construction' || showGrid) {
+    context.beginPath()
+    for (let x = 0; x <= props.pattern.width; x += 1) {
+      context.moveTo(x * cellSize + 0.5, 0)
+      context.lineTo(x * cellSize + 0.5, logicalHeight)
+    }
+    for (let y = 0; y <= props.pattern.height; y += 1) {
+      context.moveTo(0, y * cellSize + 0.5)
+      context.lineTo(logicalWidth, y * cellSize + 0.5)
+    }
+    context.strokeStyle = 'rgb(74 61 49 / 18%)'
+    context.lineWidth = 1
+    context.stroke()
+
+    context.beginPath()
+    for (let x = 0; x <= props.pattern.width; x += 29) {
+      context.moveTo(x * cellSize + 0.5, 0)
+      context.lineTo(x * cellSize + 0.5, logicalHeight)
+    }
+    for (let y = 0; y <= props.pattern.height; y += 29) {
+      context.moveTo(0, y * cellSize + 0.5)
+      context.lineTo(logicalWidth, y * cellSize + 0.5)
+    }
+    context.strokeStyle = 'rgb(167 53 34 / 62%)'
+    context.lineWidth = 1.5
+    context.stroke()
+  }
+
+  if (showGuides) {
+    context.save()
+    context.beginPath()
+    context.setLineDash([Math.max(4, cellSize * 0.45), cellSize * 0.25])
+    context.moveTo((logicalWidth + 1) / 2, 0)
+    context.lineTo((logicalWidth + 1) / 2, logicalHeight)
+    context.moveTo(0, (logicalHeight + 1) / 2)
+    context.lineTo(logicalWidth, (logicalHeight + 1) / 2)
+    context.strokeStyle = 'rgb(36 99 161 / 72%)'
+    context.lineWidth = Math.max(1.5, cellSize * 0.075)
+    context.stroke()
+    context.restore()
+  }
+}
+
+function render() {
+  if (!canvas.value) return
+  drawGrid(
+    canvas.value,
+    BASE_CELL_SIZE * props.zoom,
+    window.devicePixelRatio,
+    props.viewMode,
+    props.showGrid,
+    props.showGuides,
+    draft,
+  )
+  drawTracingOverlay()
+  drawSelection()
+}
+
+function drawTracingOverlay() {
+  const target = canvas.value
+  const image = tracingImage
+  if (!target || !image || !props.tracingVisible) return
+  const context = target.getContext('2d')
+  if (!context) return
+  const size = cellSize.value
+  const logicalWidth = props.pattern.width * size
+  const logicalHeight = props.pattern.height * size
+  const scale = Math.min(
+    logicalWidth / image.naturalWidth,
+    logicalHeight / image.naturalHeight,
+  )
+  const width = image.naturalWidth * scale
+  const height = image.naturalHeight * scale
+  const x = (logicalWidth - width) / 2 + props.tracingOffsetX * size
+  const y = (logicalHeight - height) / 2 + props.tracingOffsetY * size
+
+  context.save()
+  context.setTransform(
+    window.devicePixelRatio,
+    0,
+    0,
+    window.devicePixelRatio,
+    0,
+    0,
+  )
+  context.beginPath()
+  context.rect(0, 0, logicalWidth, logicalHeight)
+  context.clip()
+  context.globalAlpha = props.tracingOpacity
+  context.drawImage(image, x, y, width, height)
+  context.restore()
+}
+
+function loadTracingImage(url: string) {
+  const token = ++tracingLoadToken
+  tracingImage = undefined
+  if (!url) {
+    render()
+    return
+  }
+  const image = new Image()
+  image.onload = () => {
+    if (token !== tracingLoadToken) return
+    tracingImage = image
+    render()
+  }
+  image.onerror = () => {
+    if (token !== tracingLoadToken) return
+    tracingImage = undefined
+    render()
+  }
+  image.src = url
+}
+
+function drawSelection() {
+  const target = canvas.value
+  if (!target) return
+  const size = cellSize.value
+  const context = target.getContext('2d')
+  if (!context) return
+  context.save()
+  context.setTransform(
+    window.devicePixelRatio,
+    0,
+    0,
+    window.devicePixelRatio,
+    0,
+    0,
+  )
+
+  if (!selecting && props.selection.length > 0) {
+    const selected = new Set(props.selection)
+    context.fillStyle = 'rgb(42 103 216 / 18%)'
+    selected.forEach((index) => {
+      const x = index % props.pattern.width
+      const y = Math.floor(index / props.pattern.width)
+      context.fillRect(x * size, y * size, size, size)
+    })
+
+    context.beginPath()
+    selected.forEach((index) => {
+      const x = index % props.pattern.width
+      const y = Math.floor(index / props.pattern.width)
+      const left = x * size
+      const top = y * size
+      if (!selected.has(index - props.pattern.width)) {
+        context.moveTo(left, top)
+        context.lineTo(left + size, top)
+      }
+      if (x === props.pattern.width - 1 || !selected.has(index + 1)) {
+        context.moveTo(left + size, top)
+        context.lineTo(left + size, top + size)
+      }
+      if (
+        y === props.pattern.height - 1 ||
+        !selected.has(index + props.pattern.width)
+      ) {
+        context.moveTo(left + size, top + size)
+        context.lineTo(left, top + size)
+      }
+      if (x === 0 || !selected.has(index - 1)) {
+        context.moveTo(left, top + size)
+        context.lineTo(left, top)
+      }
+    })
+    context.setLineDash([Math.max(3, size * 0.28), Math.max(2, size * 0.18)])
+    context.strokeStyle = '#2563d8'
+    context.lineWidth = Math.max(1.5, size * 0.08)
+    context.stroke()
+  }
+
+  if (
+    selecting &&
+    props.selectionMode === 'rectangle' &&
+    selectionStart &&
+    selectionEnd
+  ) {
+    const startX = Math.floor(Math.min(selectionStart.x, selectionEnd.x))
+    const endX = Math.floor(Math.max(selectionStart.x, selectionEnd.x))
+    const startY = Math.floor(Math.min(selectionStart.y, selectionEnd.y))
+    const endY = Math.floor(Math.max(selectionStart.y, selectionEnd.y))
+    const left = startX * size
+    const top = startY * size
+    const width = (endX - startX + 1) * size
+    const height = (endY - startY + 1) * size
+    context.fillStyle = 'rgb(42 103 216 / 18%)'
+    context.fillRect(left, top, width, height)
+    context.setLineDash([Math.max(3, size * 0.28), Math.max(2, size * 0.18)])
+    context.strokeStyle = '#2563d8'
+    context.lineWidth = Math.max(1.5, size * 0.08)
+    context.strokeRect(left, top, width, height)
+  }
+
+  if (selecting && props.selectionMode === 'lasso' && lassoPoints.length > 1) {
+    context.beginPath()
+    context.moveTo(lassoPoints[0]!.x * size, lassoPoints[0]!.y * size)
+    lassoPoints.slice(1).forEach((point) => {
+      context.lineTo(point.x * size, point.y * size)
+    })
+    context.closePath()
+    context.fillStyle = 'rgb(42 103 216 / 14%)'
+    context.fill()
+    context.setLineDash([Math.max(3, size * 0.28), Math.max(2, size * 0.18)])
+    context.strokeStyle = '#2563d8'
+    context.lineWidth = Math.max(1.5, size * 0.08)
+    context.stroke()
+  }
+  context.restore()
+}
+
+function getCell(event: PointerEvent) {
+  const target = canvas.value
+  if (!target) return undefined
+  const bounds = target.getBoundingClientRect()
+  const cellSize = BASE_CELL_SIZE * props.zoom
+  const x = Math.floor((event.clientX - bounds.left) / cellSize)
+  const y = Math.floor((event.clientY - bounds.top) / cellSize)
+  if (x < 0 || y < 0 || x >= props.pattern.width || y >= props.pattern.height) {
+    return undefined
+  }
+  return { x, y, index: y * props.pattern.width + x }
+}
+
+function getGridPoint(event: PointerEvent): GridPoint | undefined {
+  const target = canvas.value
+  if (!target) return undefined
+  const bounds = target.getBoundingClientRect()
+  const x = Math.min(
+    props.pattern.width - Number.EPSILON,
+    Math.max(0, (event.clientX - bounds.left) / cellSize.value),
+  )
+  const y = Math.min(
+    props.pattern.height - Number.EPSILON,
+    Math.max(0, (event.clientY - bounds.top) / cellSize.value),
+  )
+  return { x, y }
+}
+
+function paintCell(x: number, y: number) {
+  const index = y * props.pattern.width + x
+  const value = props.tool === 'eraser' ? 0 : props.selectedColor
+  if ((draft.get(index) ?? props.pattern.cells[index]) === value) return
+  draft.set(index, value)
+}
+
+function paintLine(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+) {
+  let x = from.x
+  let y = from.y
+  const dx = Math.abs(to.x - from.x)
+  const dy = -Math.abs(to.y - from.y)
+  const stepX = from.x < to.x ? 1 : -1
+  const stepY = from.y < to.y ? 1 : -1
+  let error = dx + dy
+
+  while (true) {
+    paintCell(x, y)
+    if (x === to.x && y === to.y) break
+    const doubled = 2 * error
+    if (doubled >= dy) {
+      error += dy
+      x += stepX
+    }
+    if (doubled <= dx) {
+      error += dx
+      y += stepY
+    }
+  }
+}
+
+function handlePointerDown(event: PointerEvent) {
+  if (event.button !== 0) return
+  const cell = getCell(event)
+  if (!cell) return
+
+  if (props.tool === 'picker' || event.altKey) {
+    const colorIndex = props.pattern.cells[cell.index] ?? 0
+    if (colorIndex > 0) emit('pickColor', colorIndex)
+    return
+  }
+
+  if (props.tool === 'select') {
+    const point = getGridPoint(event)
+    if (!point) return
+    selecting = true
+    selectionStart = point
+    selectionEnd = point
+    lassoPoints = [point]
+    canvas.value?.setPointerCapture(event.pointerId)
+    render()
+    return
+  }
+
+  drawing = true
+  lastCell = cell
+  canvas.value?.setPointerCapture(event.pointerId)
+  paintCell(cell.x, cell.y)
+  render()
+}
+
+function handlePointerMove(event: PointerEvent) {
+  if (selecting) {
+    const point = getGridPoint(event)
+    if (!point) return
+    selectionEnd = point
+    if (props.selectionMode === 'lasso') {
+      const previous = lassoPoints.at(-1)
+      if (
+        !previous ||
+        Math.hypot(point.x - previous.x, point.y - previous.y) >= 0.16
+      ) {
+        lassoPoints.push(point)
+      }
+    }
+    render()
+    return
+  }
+  if (!drawing) return
+  const cell = getCell(event)
+  if (!cell) return
+  if (lastCell) paintLine(lastCell, cell)
+  lastCell = cell
+  render()
+}
+
+function commitInteraction() {
+  if (selecting) {
+    selecting = false
+    const indexes =
+      props.selectionMode === 'rectangle' && selectionStart && selectionEnd
+        ? rectangleSelection(
+            props.pattern.width,
+            props.pattern.height,
+            selectionStart,
+            selectionEnd,
+          )
+        : lassoSelection(props.pattern.width, props.pattern.height, lassoPoints)
+    selectionStart = undefined
+    selectionEnd = undefined
+    lassoPoints = []
+    emit('selectionChange', indexes)
+    render()
+    return
+  }
+  if (!drawing) return
+  drawing = false
+  const edits = [...draft.entries()].map(([index, after]) => ({
+    index,
+    before: props.pattern.cells[index] ?? 0,
+    after,
+  }))
+  draft.clear()
+  lastCell = undefined
+  emit('apply', edits)
+}
+
+async function exportPng(
+  viewMode: PatternViewMode,
+  showGrid = true,
+  showGuides = false,
+): Promise<Blob> {
+  const exportCanvas = document.createElement('canvas')
+  drawGrid(exportCanvas, 36, 1, viewMode, showGrid, showGuides)
+  return new Promise((resolve, reject) => {
+    exportCanvas.toBlob((blob) => {
+      if (blob) resolve(blob)
+      else reject(new Error('无法生成 PNG 图纸。'))
+    }, 'image/png')
+  })
+}
+
+defineExpose({ exportPng })
+
+watch(
+  () => [
+    props.revision,
+    props.zoom,
+    props.pattern.width,
+    props.pattern.height,
+    props.viewMode,
+    props.showGrid,
+    props.showGuides,
+    props.selection,
+    props.selectionMode,
+    props.tracingVisible,
+    props.tracingOpacity,
+    props.tracingOffsetX,
+    props.tracingOffsetY,
+  ],
+  () => nextTick(render),
+)
+watch(() => props.tracingImageUrl, loadTracingImage, { immediate: true })
+onMounted(render)
+</script>
+
+<template>
+  <div class="pattern-board" :style="boardStyle">
+    <div class="axis-corner" aria-hidden="true"><span>Y</span><b>X</b></div>
+    <div class="x-axis" aria-label="X 坐标">
+      <span
+        v-for="coordinate in xCoordinates"
+        :key="coordinate"
+        :style="{
+          left: `${(coordinate - 1) * cellSize}px`,
+          width: `${coordinateStep * cellSize}px`,
+        }"
+      >
+        {{ coordinate }}
+      </span>
+    </div>
+    <div class="y-axis" aria-label="Y 坐标">
+      <span
+        v-for="coordinate in yCoordinates"
+        :key="coordinate"
+        :style="{
+          top: `${(coordinate - 1) * cellSize}px`,
+          height: `${coordinateStep * cellSize}px`,
+        }"
+      >
+        {{ coordinate }}
+      </span>
+    </div>
+    <canvas
+      ref="canvas"
+      class="pattern-canvas"
+      :class="{
+        'is-picker': tool === 'picker',
+        'is-selecting': tool === 'select',
+      }"
+      aria-label="拼豆图纸画布"
+      tabindex="0"
+      @contextmenu.prevent
+      @pointerdown="handlePointerDown"
+      @pointermove="handlePointerMove"
+      @pointerup="commitInteraction"
+      @pointercancel="commitInteraction"
+    />
+  </div>
+</template>
+
+<style scoped>
+.pattern-board {
+  position: relative;
+  flex: none;
+  scroll-margin-top: 150px;
+  color: #67594e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.63rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.axis-corner,
+.x-axis,
+.y-axis {
+  position: absolute;
+  background: #f3eee7;
+  user-select: none;
+}
+
+.axis-corner {
+  top: 0;
+  left: 0;
+  width: 30px;
+  height: 30px;
+  border-right: 1px solid #d6cabd;
+  border-bottom: 1px solid #d6cabd;
+}
+
+.axis-corner::after {
+  position: absolute;
+  top: 14px;
+  left: 3px;
+  width: 24px;
+  height: 1px;
+  background: #c6b9ac;
+  content: '';
+  transform: rotate(45deg);
+}
+
+.axis-corner span,
+.axis-corner b {
+  position: absolute;
+  z-index: 1;
+  font-size: 0.55rem;
+}
+
+.axis-corner span {
+  bottom: 2px;
+  left: 4px;
+}
+
+.axis-corner b {
+  top: 2px;
+  right: 4px;
+}
+
+.x-axis {
+  top: 0;
+  left: 30px;
+  width: calc(100% - 30px);
+  height: 30px;
+  overflow: hidden;
+  border-bottom: 1px solid #d6cabd;
+}
+
+.y-axis {
+  top: 30px;
+  left: 0;
+  width: 30px;
+  height: calc(100% - 30px);
+  overflow: hidden;
+  border-right: 1px solid #d6cabd;
+}
+
+.x-axis span,
+.y-axis span {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+}
+
+.x-axis span {
+  top: 0;
+  height: 30px;
+  border-right: 1px solid rgb(88 72 59 / 12%);
+}
+
+.y-axis span {
+  left: 0;
+  width: 30px;
+  border-bottom: 1px solid rgb(88 72 59 / 12%);
+}
+
+.pattern-canvas {
+  position: absolute;
+  top: 30px;
+  left: 30px;
+  display: block;
+  border-radius: 0 0 12px;
+  box-shadow: 0 12px 48px rgb(61 45 30 / 14%);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  scroll-margin-top: 150px;
+}
+
+.pattern-canvas:focus-visible {
+  outline: 3px solid rgb(203 75 50 / 35%);
+  outline-offset: 4px;
+}
+
+.pattern-canvas.is-picker {
+  cursor: copy;
+}
+
+.pattern-canvas.is-selecting {
+  cursor: cell;
+}
+</style>

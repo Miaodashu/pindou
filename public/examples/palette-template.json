@@ -1,0 +1,22 @@
+{
+  "id": "example-measured-v1",
+  "brand": "示例品牌",
+  "name": "示例实测色卡",
+  "version": "1.0.0",
+  "source": "measured",
+  "disclaimer": "请替换为经过授权或实物测量的数据。",
+  "colors": [
+    {
+      "code": "EX01",
+      "name": "示例白",
+      "hex": "#F7F5EF",
+      "symbol": "1"
+    },
+    {
+      "code": "EX02",
+      "name": "示例红",
+      "hex": "#D94A38",
+      "symbol": "2"
+    }
+  ]
+}
