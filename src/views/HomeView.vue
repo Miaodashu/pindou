@@ -23,7 +23,9 @@ const editorPreview = `${import.meta.env.BASE_URL}images/editor-preview.png`
             开始生成图纸
             <ArrowRight :size="18" aria-hidden="true" />
           </RouterLink>
-          <RouterLink class="text-link" to="/editor">进入编辑器</RouterLink>
+          <RouterLink class="text-link" to="/reconstruct"
+            >修复模糊图纸</RouterLink
+          >
         </div>
         <p class="hero-note">
           <ShieldCheck :size="16" aria-hidden="true" />
@@ -109,7 +111,7 @@ const editorPreview = `${import.meta.env.BASE_URL}images/editor-preview.png`
       <div class="editor-preview">
         <img
           :src="editorPreview"
-          alt="拼豆图纸编辑器界面，包含图片转换、画布、豆仓与临摹面板"
+          alt="拼豆图纸编辑器界面，包含图片转换、画布、材料清单与临摹面板"
         />
       </div>
     </section>

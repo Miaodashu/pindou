@@ -12,12 +12,12 @@ import {
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import { storeToRefs } from 'pinia'
+import { RouterLink } from 'vue-router'
 
 import type { SelectionMode } from '@/core/selection'
 import ImageImportPanel from '@/features/converter/ImageImportPanel.vue'
 import PatternCanvas from '@/features/editor/PatternCanvas.vue'
 import { useEditorStore, type EditorTool } from '@/features/editor/editorStore'
-import BeanInventoryPanel from '@/features/inventory/BeanInventoryPanel.vue'
 import PalettePanel from '@/features/palette/PalettePanel.vue'
 import TracingImagePanel from '@/features/tracing/TracingImagePanel.vue'
 
@@ -541,18 +541,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
       </section>
 
       <aside class="right-sidebar">
-        <BeanInventoryPanel
-          :palette="palette"
-          :selected-color="selectedColor"
-          :rows="inventorySummary.rows"
-          :total-stock="inventorySummary.totalStock"
-          :total-used="inventorySummary.totalUsed"
-          :total-remaining="inventorySummary.totalRemaining"
-          :total-shortage="inventorySummary.totalShortage"
-          @set-stock="store.setInventoryStock"
-        />
         <section class="panel summary-panel">
-          <p class="panel-label">材料清单</p>
+          <div class="summary-heading">
+            <p class="panel-label">材料清单</p>
+            <RouterLink to="/inventory">
+              前往豆仓
+              <span
+                v-if="inventorySummary.totalShortage > 0"
+                class="shortage-badge"
+              >
+                缺 {{ inventorySummary.totalShortage }}
+              </span>
+            </RouterLink>
+          </div>
           <div class="metric-row">
             <div>
               <strong>{{ filledCellCount }}</strong
@@ -861,6 +862,39 @@ kbd {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+}
+
+.summary-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.summary-heading .panel-label {
+  margin: 0;
+}
+
+.summary-heading a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent-strong);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.summary-heading a:hover {
+  color: var(--rose-strong);
+}
+
+.shortage-badge {
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: #8b343d;
+  background: var(--rose-pale);
 }
 
 .metric-row div {

@@ -211,10 +211,12 @@ test('searches colors and applies production editing helpers', async ({
 test('renders a realistic bead preview and exports an inventory-aware CSV', async ({
   page,
 }) => {
-  await page.goto('/editor')
+  await page.goto('/inventory')
+  await page.getByLabel('C5 库存数量').fill('7')
+  await page.getByLabel('C5 库存数量').press('Tab')
+  await page.getByRole('link', { name: '图纸编辑器', exact: true }).click()
   const canvas = page.getByLabel('拼豆图纸画布')
   await page.getByRole('button', { name: 'C5 蓝青系 C5' }).click()
-  await page.getByLabel('C5 库存数量').fill('7')
   await canvas.click({ position: { x: 12, y: 12 } })
 
   await page.getByRole('button', { name: '成品预览', exact: true }).click()
@@ -290,21 +292,106 @@ test('requires a rectangle or lasso selection before filling', async ({
 test('uses Mard by default and tracks warehouse stock against live usage', async ({
   page,
 }) => {
-  await page.goto('/editor')
+  await page.goto('/inventory')
   await expect(
     page.getByRole('heading', { name: 'Mard 221 色卡' }),
   ).toBeVisible()
-  await expect(page.getByText('Mard · v2026.10-reference.2')).toBeVisible()
+  await expect(
+    page.getByText(/Mard · 221 色 · 2026\.10-reference\.2/),
+  ).toBeVisible()
 
-  await page.getByRole('button', { name: 'C5 蓝青系 C5' }).click()
   await page.getByLabel('C5 库存数量').fill('5')
-  await page.getByLabel('C5 库存数量').press('Enter')
-  await page.getByLabel('拼豆图纸画布').click({ position: { x: 12, y: 12 } })
+  await page.getByLabel('C5 库存数量').press('Tab')
 
-  const warehouse = page.locator('.inventory-panel')
-  await expect(warehouse.getByText('用 1')).toBeVisible()
-  await expect(warehouse.getByText('余 4')).toBeVisible()
-  await expect(warehouse.getByText('缺豆')).toBeVisible()
+  await page.getByRole('link', { name: /回到图纸编辑器/ }).click()
+  await page.getByRole('button', { name: 'C5 蓝青系 C5' }).click()
+  await page.getByLabel('拼豆图纸画布').click({ position: { x: 12, y: 12 } })
+  await page.getByRole('link', { name: '豆仓', exact: true }).click()
+
+  const warehouse = page.locator('.inventory-workspace')
+  const c5Row = warehouse.getByRole('row', { name: /^C5 / })
+  await expect(c5Row).toContainText('1')
+  await expect(c5Row).toContainText('余 4')
+  await expect(warehouse.getByText('缺豆数量')).toBeVisible()
+  await expect(page.getByRole('button', { name: '本图使用' })).toBeVisible()
+})
+
+test('keeps bean inventory on its own route outside the editor', async ({
+  page,
+}) => {
+  await page.goto('/editor')
+  await expect(page.locator('.inventory-workspace')).toHaveCount(0)
+  await page.getByRole('link', { name: '前往豆仓' }).click()
+
+  await expect(page).toHaveURL(/\/inventory$/)
+  await expect(
+    page.getByRole('heading', { name: '独立豆仓，清楚掌握每一个色号' }),
+  ).toBeVisible()
+  await expect(page.getByPlaceholder('搜索色号、名称或 HEX')).toBeVisible()
+})
+
+test('reconstructs a blurry chart into a real SVG and opens it in the editor', async ({
+  page,
+}) => {
+  await page.goto('/reconstruct')
+  await page
+    .locator('input[type="file"][accept="image/png,image/jpeg,image/webp"]')
+    .setInputFiles({
+      name: 'blurry-chart.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlH0s8AAAAASUVORK5CYII=',
+        'base64',
+      ),
+    })
+  const calibrationWidth = await page
+    .getByRole('group', { name: '网格校准预览' })
+    .evaluate((element) => element.clientWidth)
+  expect(calibrationWidth).toBeGreaterThan(600)
+  const calibrationPreview = page.getByRole('group', {
+    name: '网格校准预览',
+  })
+  await calibrationPreview.scrollIntoViewIfNeeded()
+  const dockBox = await page.locator('.calibration-dock').boundingBox()
+  expect(dockBox).not.toBeNull()
+  expect(dockBox!.y).toBeGreaterThanOrEqual(70)
+  expect(dockBox!.y).toBeLessThan(120)
+  const calibrationBox = await calibrationPreview.boundingBox()
+  expect(calibrationBox).not.toBeNull()
+  const initialLeft = Number(await page.getByLabel('左边界').inputValue())
+  await page.mouse.move(
+    calibrationBox!.x + calibrationBox!.width * 0.015,
+    calibrationBox!.y + calibrationBox!.height / 2,
+  )
+  await page.mouse.down()
+  await page.mouse.move(
+    calibrationBox!.x + calibrationBox!.width * 0.08,
+    calibrationBox!.y + calibrationBox!.height / 2,
+  )
+  await page.mouse.up()
+  expect(Number(await page.getByLabel('左边界').inputValue())).toBeGreaterThan(
+    initialLeft,
+  )
+  await page.getByLabel('列数').fill('1')
+  await page.getByLabel('行数').fill('1')
+  await page.getByRole('button', { name: '开始高清重建' }).click()
+
+  await expect(page.getByLabel('高清重建图纸')).toBeVisible()
+  await expect(
+    page.locator('.result-summary').getByText('1 × 1', { exact: true }),
+  ).toBeVisible()
+
+  const svgDownload = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出 SVG' }).click()
+  const svgPath = await (await svgDownload).path()
+  expect(svgPath).not.toBeNull()
+  const svg = await readFile(svgPath!, 'utf8')
+  expect(svg).toContain('<svg')
+  expect(svg).not.toContain('<image')
+
+  await page.getByRole('button', { name: /进入编辑器继续修改/ }).click()
+  await expect(page).toHaveURL(/\/editor$/)
+  await expect(page.getByLabel('拼豆图纸画布')).toBeVisible()
 })
 
 test('uploads and persists a non-exported tracing image with alignment controls', async ({

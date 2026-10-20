@@ -49,7 +49,6 @@ export const useEditorStore = defineStore('editor', () => {
   const tracingOffsetY = ref(0)
   let tracingImageBlob: Blob | undefined
   let saveTimer: number | undefined
-  let inventorySaveTimer: number | undefined
   let tracingSaveTimer: number | undefined
 
   const canUndo = computed(() => undoStack.value.length > 0)
@@ -119,17 +118,14 @@ export const useEditorStore = defineStore('editor', () => {
     }
     const paletteId = palette.value.id
     const quantities = { ...inventoryQuantities.value }
-    window.clearTimeout(inventorySaveTimer)
-    inventorySaveTimer = window.setTimeout(() => {
-      void saveInventory({
-        paletteId,
-        quantities,
-        updatedAt: new Date().toISOString(),
-      }).catch((error: unknown) => {
-        console.error('Failed to persist bean inventory', error)
-        persistenceStatus.value = 'error'
-      })
-    }, 300)
+    void saveInventory({
+      paletteId,
+      quantities,
+      updatedAt: new Date().toISOString(),
+    }).catch((error: unknown) => {
+      console.error('Failed to persist bean inventory', error)
+      persistenceStatus.value = 'error'
+    })
   }
 
   function revokeTracingUrl() {
@@ -314,6 +310,25 @@ export const useEditorStore = defineStore('editor', () => {
     touch()
   }
 
+  function loadReconstruction(
+    width: number,
+    height: number,
+    cells: number[],
+    title: string,
+  ) {
+    if (cells.length !== width * height) {
+      throw new Error('重建结果与网格尺寸不一致。')
+    }
+    const reconstructed = createPattern(width, height, palette.value.id)
+    reconstructed.title = title.trim().slice(0, 120) || '高清重建图纸'
+    reconstructed.cells = [...cells]
+    pattern.value = reconstructed
+    undoStack.value = []
+    redoStack.value = []
+    resetTracing()
+    touch()
+  }
+
   function rename(title: string) {
     const normalized = title.trimStart().slice(0, 120)
     pattern.value.title = normalized || '未命名图纸'
@@ -412,6 +427,7 @@ export const useEditorStore = defineStore('editor', () => {
     undo,
     redo,
     newPattern,
+    loadReconstruction,
     rename,
     importProject,
     exportProject,

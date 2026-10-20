@@ -12,9 +12,10 @@ interface InventoryRow {
   shortage: number
 }
 
+type InventoryFilter = 'all' | 'stock' | 'used' | 'shortage'
+
 const props = defineProps<{
   palette: BeadPalette
-  selectedColor: number
   rows: InventoryRow[]
   totalStock: number
   totalUsed: number
@@ -26,11 +27,31 @@ const emit = defineEmits<{
   setStock: [colorId: string, value: number]
 }>()
 
-const showAll = ref(false)
-const selectedRow = computed(() => props.rows[props.selectedColor - 1])
-const activeRows = computed(() => {
-  const rows = props.rows.filter((row) => row.stock > 0 || row.used > 0)
-  return showAll.value ? rows : rows.slice(0, 8)
+const query = ref('')
+const filter = ref<InventoryFilter>('all')
+
+const filters: Array<{ id: InventoryFilter; label: string }> = [
+  { id: 'all', label: '全部色号' },
+  { id: 'stock', label: '有库存' },
+  { id: 'used', label: '本图使用' },
+  { id: 'shortage', label: '缺豆' },
+]
+
+const visibleRows = computed(() => {
+  const needle = query.value.trim().toLocaleLowerCase()
+  return props.rows.filter((row) => {
+    const matchesQuery =
+      !needle ||
+      `${row.color.code} ${row.color.name} ${row.color.hex}`
+        .toLocaleLowerCase()
+        .includes(needle)
+    const matchesFilter =
+      filter.value === 'all' ||
+      (filter.value === 'stock' && row.stock > 0) ||
+      (filter.value === 'used' && row.used > 0) ||
+      (filter.value === 'shortage' && row.shortage > 0)
+    return matchesQuery && matchesFilter
+  })
 })
 
 function updateStock(colorId: string, event: Event) {
@@ -39,195 +60,436 @@ function updateStock(colorId: string, event: Event) {
 </script>
 
 <template>
-  <section class="panel inventory-panel">
-    <div class="panel-heading">
+  <section class="inventory-workspace" aria-labelledby="inventory-heading">
+    <header class="workspace-header">
       <div>
-        <p class="panel-label">豆仓</p>
-        <h2>{{ palette.brand }} 库存</h2>
+        <p class="eyebrow">CURRENT PALETTE</p>
+        <h2 id="inventory-heading">{{ palette.name }}</h2>
+        <p>
+          {{ palette.brand }} · {{ palette.colors.length }} 色 ·
+          {{ palette.version }}
+        </p>
       </div>
-      <span class="warehouse-badge">本机保存</span>
+      <span class="warehouse-badge">本机自动保存</span>
+    </header>
+
+    <div class="inventory-metrics" aria-label="豆仓库存总览">
+      <article>
+        <span>库存总数</span>
+        <strong>{{ totalStock }}</strong>
+        <small>颗豆子已登记</small>
+      </article>
+      <article>
+        <span>本图使用</span>
+        <strong>{{ totalUsed }}</strong>
+        <small>当前图纸材料数</small>
+      </article>
+      <article>
+        <span>可用剩余</span>
+        <strong>{{ totalRemaining }}</strong>
+        <small>扣除本图用量后</small>
+      </article>
+      <article :class="{ warning: totalShortage > 0 }">
+        <span>缺豆数量</span>
+        <strong>{{ totalShortage }}</strong>
+        <small>{{ totalShortage ? '建议优先补充' : '库存满足当前图纸' }}</small>
+      </article>
     </div>
 
-    <div class="inventory-metrics">
-      <div>
-        <strong>{{ totalStock }}</strong
-        ><span>库存</span>
+    <div class="inventory-controls">
+      <label class="inventory-search">
+        <span class="visually-hidden">搜索豆仓色号</span>
+        <input
+          v-model="query"
+          type="search"
+          placeholder="搜索色号、名称或 HEX"
+        />
+      </label>
+      <div class="inventory-filters" aria-label="库存筛选">
+        <button
+          v-for="item in filters"
+          :key="item.id"
+          type="button"
+          :class="{ active: filter === item.id }"
+          :aria-pressed="filter === item.id"
+          @click="filter = item.id"
+        >
+          {{ item.label }}
+        </button>
       </div>
-      <div>
-        <strong>{{ totalUsed }}</strong
-        ><span>本图使用</span>
-      </div>
-      <div>
-        <strong>{{ totalRemaining }}</strong
-        ><span>可用剩余</span>
-      </div>
-      <div :class="{ warning: totalShortage > 0 }">
-        <strong>{{ totalShortage }}</strong
-        ><span>缺豆</span>
-      </div>
+      <span class="result-count">{{ visibleRows.length }} 个色号</span>
     </div>
 
-    <label v-if="selectedRow" class="stock-editor">
-      <span>
-        <i :style="{ backgroundColor: selectedRow.color.hex }" />
-        当前色 {{ selectedRow.color.code }} 的库存
-      </span>
-      <input
-        :value="selectedRow.stock"
-        :aria-label="`${selectedRow.color.code} 库存数量`"
-        type="number"
-        min="0"
-        max="999999"
-        inputmode="numeric"
-        @change="updateStock(selectedRow.color.id, $event)"
-      />
-    </label>
-
-    <div v-if="activeRows.length" class="inventory-list">
-      <div v-for="row in activeRows" :key="row.color.id" class="inventory-row">
-        <i :style="{ backgroundColor: row.color.hex }" />
-        <strong>{{ row.color.code }}</strong>
-        <span>用 {{ row.used }}</span>
-        <span v-if="row.shortage" class="shortage">缺 {{ row.shortage }}</span>
-        <span v-else>余 {{ row.remaining }}</span>
+    <div class="inventory-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">色号</th>
+            <th scope="col">颜色</th>
+            <th scope="col">库存</th>
+            <th scope="col">本图使用</th>
+            <th scope="col">可用 / 缺少</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="row in visibleRows" :key="row.color.id">
+            <td>
+              <span class="color-code">{{ row.color.code }}</span>
+            </td>
+            <td>
+              <div class="color-identity">
+                <i :style="{ backgroundColor: row.color.hex }" />
+                <span>
+                  <strong>{{ row.color.name }}</strong>
+                  <small>{{ row.color.hex.toUpperCase() }}</small>
+                </span>
+              </div>
+            </td>
+            <td>
+              <label class="stock-input">
+                <span class="visually-hidden"
+                  >{{ row.color.code }} 库存数量</span
+                >
+                <input
+                  :value="row.stock"
+                  :aria-label="`${row.color.code} 库存数量`"
+                  type="number"
+                  min="0"
+                  max="999999"
+                  inputmode="numeric"
+                  @input="updateStock(row.color.id, $event)"
+                />
+                <span>颗</span>
+              </label>
+            </td>
+            <td>
+              <strong>{{ row.used }}</strong>
+            </td>
+            <td>
+              <span v-if="row.shortage" class="stock-status shortage"
+                >缺 {{ row.shortage }}</span
+              >
+              <span v-else-if="row.stock" class="stock-status available"
+                >余 {{ row.remaining }}</span
+              >
+              <span v-else class="stock-status empty">未登记</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-if="visibleRows.length === 0" class="inventory-empty">
+        <strong>没有符合条件的色号</strong>
+        <p>换一个关键词或筛选条件试试。</p>
       </div>
-      <button
-        v-if="rows.filter((row) => row.stock > 0 || row.used > 0).length > 8"
-        class="list-toggle"
-        type="button"
-        @click="showAll = !showAll"
-      >
-        {{ showAll ? '收起' : '查看全部' }}
-      </button>
     </div>
-    <p v-else class="inventory-empty">
-      在色卡中选中颜色后录入库存；画布用量会自动从豆仓扣减。
-    </p>
   </section>
 </template>
 
 <style scoped>
-.panel-heading {
+.inventory-workspace {
+  overflow: hidden;
+  border: 1px solid rgb(157 79 88 / 14%);
+  border-radius: 28px;
+  background: rgb(255 253 253 / 96%);
+  box-shadow: var(--shadow-medium);
+}
+
+.workspace-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
+  gap: 24px;
+  padding: 28px 30px 22px;
+  border-bottom: 1px solid var(--border);
 }
 
-.panel-label {
-  margin-bottom: 4px;
+.eyebrow {
+  margin: 0 0 6px;
+  color: var(--sage-dark);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
 }
 
 h2 {
   margin: 0;
-  font-size: 0.95rem;
+  font-family: 'Cormorant Garamond', 'Noto Serif SC', serif;
+  font-size: clamp(1.7rem, 3vw, 2.25rem);
+}
+
+.workspace-header p:last-child {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 0.76rem;
 }
 
 .warehouse-badge {
-  padding: 4px 7px;
+  flex: none;
+  padding: 7px 11px;
+  border: 1px solid rgb(53 104 78 / 12%);
   border-radius: 999px;
   color: var(--sage-dark);
   background: var(--sage-pale);
-  font-size: 0.62rem;
+  font-size: 0.68rem;
   font-weight: 800;
 }
 
 .inventory-metrics {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
-  margin: 12px 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  padding: 22px 30px;
 }
 
-.inventory-metrics div {
+.inventory-metrics article {
   display: grid;
-  padding: 9px;
-  border-radius: 9px;
-  background: var(--surface-muted);
+  gap: 4px;
+  padding: 18px;
+  border: 1px solid rgb(53 104 78 / 9%);
+  border-radius: 18px;
+  background: var(--sage-pale);
 }
 
-.inventory-metrics strong {
-  font-size: 1rem;
-}
-
-.inventory-metrics span,
-.inventory-empty,
-.inventory-row {
-  color: var(--text-muted);
-  font-size: 0.66rem;
-}
-
-.inventory-metrics .warning {
-  color: #9b3f47;
+.inventory-metrics article.warning {
+  border-color: rgb(146 77 86 / 15%);
   background: var(--rose-pale);
 }
 
-.stock-editor {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 74px;
-  align-items: center;
-  gap: 8px;
-  padding: 9px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+.inventory-metrics span,
+.inventory-metrics small {
+  color: var(--text-muted);
   font-size: 0.68rem;
 }
 
-.stock-editor span {
+.inventory-metrics strong {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.inventory-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 10px;
+  padding: 0 30px 18px;
+}
+
+.inventory-search {
+  flex: 1 1 240px;
+}
+
+.inventory-search input {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: #fffafa;
+}
+
+.inventory-filters {
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
-.stock-editor i,
-.inventory-row i {
-  flex: none;
-  width: 15px;
-  height: 15px;
-  border: 1px solid rgb(0 0 0 / 14%);
-  border-radius: 50%;
-}
-
-.stock-editor input {
-  min-width: 0;
-  width: 100%;
-  padding: 6px;
+.inventory-filters button {
+  min-height: 38px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
-  border-radius: 7px;
-}
-
-.inventory-list {
-  display: grid;
-  gap: 5px;
-  margin-top: 10px;
-}
-
-.inventory-row {
-  display: grid;
-  grid-template-columns: 16px 32px 1fr auto;
-  align-items: center;
-  gap: 5px;
-}
-
-.inventory-row strong {
-  color: var(--text);
-}
-
-.shortage {
-  color: #9b3f47;
+  border-radius: 10px;
+  color: var(--text-muted);
+  background: var(--surface);
+  font-size: 0.7rem;
   font-weight: 800;
 }
 
-.list-toggle {
-  padding: 5px;
-  border: 0;
+.inventory-filters button:hover,
+.inventory-filters button.active {
+  border-color: var(--rose-strong);
   color: var(--accent-strong);
-  background: transparent;
+  background: var(--rose-pale);
+}
+
+.result-count {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.inventory-table-wrap {
+  position: relative;
+  max-height: 62vh;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  padding: 12px 18px;
+  color: var(--text-muted);
+  background: #f8eeee;
   font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+td {
+  padding: 10px 18px;
+  border-top: 1px solid rgb(231 217 217 / 72%);
+  font-size: 0.76rem;
+}
+
+tbody tr:hover {
+  background: rgb(248 232 233 / 38%);
+}
+
+.color-code {
+  display: inline-grid;
+  min-width: 45px;
+  min-height: 30px;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--accent-strong);
+  background: var(--rose-pale);
+  font-family: ui-monospace, monospace;
+  font-weight: 800;
+}
+
+.color-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 160px;
+}
+
+.color-identity i {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgb(0 0 0 / 14%);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 3px rgb(255 255 255 / 28%);
+}
+
+.color-identity span {
+  display: grid;
+  gap: 2px;
+}
+
+.color-identity small {
+  color: var(--text-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.63rem;
+}
+
+.stock-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.stock-input input {
+  width: 94px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text);
+  background: #fffafa;
+  font-weight: 700;
+}
+
+.stock-status {
+  display: inline-flex;
+  min-width: 58px;
+  justify-content: center;
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 800;
+}
+
+.stock-status.available {
+  color: var(--sage-dark);
+  background: var(--sage-pale);
+}
+
+.stock-status.shortage {
+  color: #8b343d;
+  background: var(--rose-pale);
+}
+
+.stock-status.empty {
+  color: var(--text-muted);
+  background: var(--surface-muted);
 }
 
 .inventory-empty {
-  margin: 10px 0 0;
-  line-height: 1.55;
+  padding: 70px 20px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.inventory-empty p {
+  margin: 6px 0 0;
+  font-size: 0.76rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+@media (max-width: 820px) {
+  .inventory-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .inventory-table-wrap {
+    max-height: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .workspace-header,
+  .inventory-controls {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .inventory-metrics {
+    gap: 8px;
+    padding: 16px 18px;
+  }
+
+  .inventory-metrics article {
+    padding: 13px;
+  }
+
+  th,
+  td {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .warehouse-badge,
+  th:nth-child(4),
+  td:nth-child(4) {
+    display: none;
+  }
 }
 </style>
