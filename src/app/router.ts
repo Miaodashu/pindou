@@ -15,6 +15,11 @@ export const router = createRouter({
       component: () => import('@/views/EditorView.vue'),
     },
     {
+      path: '/draw',
+      name: 'draw',
+      component: () => import('@/views/DrawView.vue'),
+    },
+    {
       path: '/inventory',
       name: 'inventory',
       component: () => import('@/views/InventoryView.vue'),

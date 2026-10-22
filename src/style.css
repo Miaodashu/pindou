@@ -176,10 +176,15 @@ nav a.router-link-active::after {
   }
 
   nav {
-    gap: 15px;
+    min-width: 0;
+    max-width: calc(100vw - 125px);
+    gap: 13px;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 
   nav a {
+    flex: none;
     font-size: 0.7rem;
   }
 }

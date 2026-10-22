@@ -12,6 +12,7 @@ import { RouterLink, RouterView } from 'vue-router'
       <nav aria-label="主导航">
         <RouterLink to="/">首页</RouterLink>
         <RouterLink to="/editor">图纸编辑器</RouterLink>
+        <RouterLink to="/draw">创作画板</RouterLink>
         <RouterLink to="/reconstruct">高清重建</RouterLink>
         <RouterLink to="/inventory">豆仓</RouterLink>
       </nav>

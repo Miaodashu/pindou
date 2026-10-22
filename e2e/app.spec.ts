@@ -1,15 +1,96 @@
 import { expect, test } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
+import type { Page } from '@playwright/test'
+
+async function openFullEditor(page: Page) {
+  await page.getByRole('button', { name: '编辑当前图纸' }).click()
+  await expect(page.getByLabel('拼豆图纸画布')).toBeVisible()
+}
+
+async function chooseColor(page: Page, name: string) {
+  await page.locator('.current-color').click()
+  await page.getByRole('button', { name }).click()
+}
 
 test('opens the editor from the home page', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('link', { name: '开始生成图纸' }).click()
 
   await expect(page).toHaveURL(/\/editor$/)
+  await expect(
+    page.getByRole('heading', { name: '选择一张图片，从裁切开始' }),
+  ).toBeVisible()
+  await openFullEditor(page)
   await expect(page.getByLabel('拼豆图纸画布')).toBeVisible()
   await expect(page.getByLabel('X 坐标')).toBeVisible()
   await expect(page.getByLabel('Y 坐标')).toBeVisible()
-  await expect(page.getByText('材料清单')).toBeVisible()
+  await expect(page.getByText('色号用量')).toBeVisible()
+})
+
+test('supports blank drawing and tracing in the dedicated creation board', async ({
+  page,
+}) => {
+  await page.goto('/draw')
+
+  await expect(page.getByRole('heading', { name: '创作画板' })).toBeVisible()
+  await expect(page.locator('.draw-page')).toHaveAttribute('aria-busy', 'false')
+  await expect(page.getByLabel('拼豆图纸画布')).toBeVisible()
+
+  await page.getByLabel('新图纸宽度').fill('12')
+  await page.getByLabel('新图纸高度').fill('13')
+  await expect(page.getByLabel('新图纸宽度')).toHaveValue('12')
+  await expect(page.getByLabel('新图纸高度')).toHaveValue('13')
+  await page.getByRole('button', { name: '新建空白画布' }).click()
+  await expect(page.locator('.canvas-options > span')).toHaveText('12 × 13')
+
+  await page.getByRole('button', { name: '临摹创作' }).click()
+  await page.getByLabel('上传临摹图片').setInputFiles({
+    name: 'drawing-trace.svg',
+    mimeType: 'image/svg+xml',
+    buffer: Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#ef4444"/></svg>',
+    ),
+  })
+  await expect(page.getByText('drawing-trace.svg')).toBeVisible()
+  await expect(
+    page.getByRole('button', { name: '显示临摹图' }),
+  ).toHaveAttribute('aria-pressed', 'true')
+
+  const horizontalGridSize = page.getByLabel('临摹图横向网格大小')
+  const verticalGridSize = page.getByLabel('临摹图纵向网格大小')
+  await horizontalGridSize.fill('125')
+  await expect(horizontalGridSize).toHaveValue('125')
+  await expect(verticalGridSize).toHaveValue('125')
+  await page.getByLabel('宽高联动').uncheck()
+  await verticalGridSize.fill('110')
+  await expect(horizontalGridSize).toHaveValue('125')
+  await expect(verticalGridSize).toHaveValue('110')
+  await page.getByRole('button', { name: '复位网格大小' }).click()
+  await expect(horizontalGridSize).toHaveValue('100')
+  await expect(verticalGridSize).toHaveValue('100')
+
+  const dragTracing = page.getByRole('button', {
+    name: '拖拽调整临摹图位置',
+  })
+  await expect(dragTracing).toHaveAttribute('aria-pressed', 'true')
+  const traceCanvas = page.getByLabel('拼豆图纸画布')
+  const traceBounds = await traceCanvas.boundingBox()
+  expect(traceBounds).not.toBeNull()
+  await page.mouse.move(traceBounds!.x + 80, traceBounds!.y + 80)
+  await page.mouse.down()
+  await page.mouse.move(traceBounds!.x + 120, traceBounds!.y + 100, {
+    steps: 5,
+  })
+  await page.mouse.up()
+  await expect(page.getByRole('button', { name: /复位 ·/ })).toContainText(
+    '2，1',
+  )
+
+  await page.getByRole('button', { name: '画笔 P' }).click()
+  await expect(dragTracing).toHaveAttribute('aria-pressed', 'false')
+  await page.getByLabel('拼豆图纸画布').click({ position: { x: 10, y: 10 } })
+  await page.getByRole('tab', { name: '色号用量' }).click()
+  await expect(page.locator('.usage-summary')).toContainText('1')
 })
 
 test('converts an imported image with OpenCV WebAssembly', async ({ page }) => {
@@ -25,31 +106,41 @@ test('converts an imported image with OpenCV WebAssembly', async ({ page }) => {
     ),
   })
   await expect(page.getByLabel('图片裁切预览')).toBeVisible()
-  await expect(page.getByText('预计成品 14.5 × 14.5 cm')).toBeVisible()
-  const strategy = page.getByLabel('生成策略')
-  const maxColors = page.getByLabel('颜色上限')
+  const cropDialog = page.getByRole('dialog', {
+    name: '裁切图片并设置生成策略',
+  })
+  await expect(cropDialog.getByText(/7\.5 ×\s+7\.5 cm/)).toBeVisible()
+  const strategy = cropDialog.getByLabel('生成策略')
+  const maxColors = cropDialog.getByLabel('颜色上限')
   await strategy.selectOption('closest')
   await expect(maxColors).toBeDisabled()
   await strategy.selectOption('balanced')
   await expect(maxColors).toBeEnabled()
-  await page.getByLabel('背景处理').selectOption('remove-edge')
-  const cropZoom = page.getByLabel('裁切缩放')
-  await cropZoom.fill('1.5')
-  await expect(cropZoom).toHaveValue('1.5')
-  const convertButton = page.getByRole('button', { name: '转换为当前图纸' })
+  await cropDialog.getByLabel('背景处理').selectOption('remove-edge')
+  await cropDialog.getByRole('button', { name: '自由裁切' }).click()
+  await expect(
+    cropDialog.getByRole('button', { name: '自由裁切' }),
+  ).toHaveAttribute('aria-pressed', 'true')
+  const convertButton = cropDialog.getByRole('button', { name: '生成图纸' })
   await expect(convertButton).toBeEnabled({ timeout: 5_000 })
   await convertButton.click()
 
   await expect(page.getByText('OpenCV.js / WASM')).toBeVisible({
     timeout: 30_000,
   })
-  await expect(page.getByText('实际颜色')).toBeVisible()
+  await expect(page.getByLabel('重新上传原图')).toBeVisible()
+  const preview = page.getByLabel('生成图纸预览')
+  await preview.hover({ position: { x: 12, y: 12 } })
+  await expect(page.getByText(/格同色区域/)).toBeVisible()
 })
 
-test('imports a measured palette and exports it with the project', async ({
+test('imports a measured palette without exposing project export', async ({
   page,
 }) => {
   await page.goto('/editor')
+  await expect(page.getByRole('button', { name: '导出项目' })).toHaveCount(0)
+  await openFullEditor(page)
+  await page.locator('.current-color').click()
   await page
     .locator('input[type="file"][accept="application/json,.json"]')
     .setInputFiles('public/examples/palette-template.json')
@@ -58,40 +149,33 @@ test('imports a measured palette and exports it with the project', async ({
     page.getByRole('heading', { name: '示例实测色卡' }),
   ).toBeVisible()
   await expect(page.getByText('来源：实物测色')).toBeVisible()
-
-  const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出项目' }).click()
-  const path = await (await downloadPromise).path()
-  expect(path).not.toBeNull()
-
-  const project = JSON.parse(await readFile(path!, 'utf8')) as {
-    kind: string
-    palette: { id: string; colors: unknown[] }
-  }
-  expect(project.kind).toBe('pindou-project')
-  expect(project.palette.id).toBe('example-measured-v1')
-  expect(project.palette.colors).toHaveLength(2)
 })
 
 test('persists a drawn bead across reloads', async ({ page }) => {
   await page.goto('/editor')
+  await openFullEditor(page)
+  await page.getByRole('button', { name: '画笔 P' }).click()
   const canvas = page.getByLabel('拼豆图纸画布')
   await canvas.click({ position: { x: 12, y: 12 } })
 
-  await expect(page.locator('.summary-panel strong').first()).toHaveText('1')
-  await expect(page.getByText('已自动保存')).toBeVisible()
+  await expect(page.locator('.summary-panel h2')).toContainText('1 颗')
+  await expect(
+    page.getByRole('dialog', { name: '全屏图纸精修' }).getByText('已自动保存'),
+  ).toBeVisible()
 
   await page.reload()
-  await expect(page.locator('.summary-panel strong').first()).toHaveText('1')
+  await openFullEditor(page)
+  await expect(page.locator('.summary-panel h2')).toContainText('1 颗')
 })
 
 test('switches render modes, picks colors, and exports both views', async ({
   page,
 }) => {
   await page.goto('/editor')
+  await openFullEditor(page)
   const canvas = page.getByLabel('拼豆图纸画布')
 
-  await page.getByRole('button', { name: 'C5 蓝青系 C5' }).click()
+  await chooseColor(page, 'C5 蓝青系 C5')
   await canvas.click({ position: { x: 12, y: 12 } })
   await page.getByRole('button', { name: '色块图', exact: true }).click()
 
@@ -118,18 +202,18 @@ test('switches render modes, picks colors, and exports both views', async ({
   })
   expect(constructionPixel).not.toEqual(colorBlockPixel)
 
-  await page.getByRole('button', { name: 'F3 红色系 F3' }).click()
-  await page.getByRole('button', { name: /取色/ }).click()
+  await chooseColor(page, 'F3 红色系 F3')
+  await page.getByRole('button', { name: '取色 I' }).click()
   await canvas.click({ position: { x: 12, y: 12 } })
-  await expect(page.locator('.help-panel strong')).toHaveText('C5')
-  await expect(page.getByRole('button', { name: /画笔/ })).toHaveAttribute(
+  await expect(page.locator('.current-color strong')).toHaveText('C5')
+  await expect(page.getByRole('button', { name: '画笔 P' })).toHaveAttribute(
     'aria-pressed',
     'true',
   )
 
-  await page.getByRole('button', { name: 'F3 红色系 F3' }).click()
+  await chooseColor(page, 'F3 红色系 F3')
   await canvas.click({ position: { x: 12, y: 12 }, modifiers: ['Alt'] })
-  await expect(page.locator('.help-panel strong')).toHaveText('C5')
+  await expect(page.locator('.current-color strong')).toHaveText('C5')
 
   await page.getByRole('button', { name: '色块图', exact: true }).click()
   const gridButton = page.getByRole('button', { name: '网格' })
@@ -137,6 +221,7 @@ test('switches render modes, picks colors, and exports both views', async ({
   await gridButton.click()
   await expect(gridButton).toHaveAttribute('aria-pressed', 'false')
 
+  await page.getByRole('button', { name: '完成' }).click()
   const constructionDownload = page.waitForEvent('download')
   await page.getByRole('button', { name: '导出施工图' }).click()
   expect((await constructionDownload).suggestedFilename()).toContain(
@@ -152,8 +237,10 @@ test('searches colors and applies production editing helpers', async ({
   page,
 }) => {
   await page.goto('/editor')
+  await openFullEditor(page)
   const canvas = page.getByLabel('拼豆图纸画布')
 
+  await page.locator('.current-color').click()
   const search = page.getByPlaceholder('搜索色号、名称或 HEX')
   await page.getByRole('button', { name: 'B 色系' }).click()
   await expect(page.getByRole('button', { name: 'C5 蓝青系 C5' })).toHaveCount(
@@ -171,10 +258,13 @@ test('searches colors and applies production editing helpers', async ({
 
   await page.getByRole('button', { name: 'C5 蓝青系 C5' }).click()
   await canvas.click({ position: { x: 12, y: 12 } })
-  await page.getByRole('button', { name: 'F3 红色系 F3' }).click()
-  await page.getByRole('button', { name: '将 C5 全部替换为当前颜色' }).click()
-  await expect(page.getByText('已将 C5 全部替换为 F3')).toBeVisible()
-  await expect(page.getByText('F3', { exact: true }).last()).toBeVisible()
+  await page.getByRole('button', { name: '替换 C5' }).click()
+  const replaceDialog = page.getByRole('dialog', { name: '替换颜色' })
+  await replaceDialog.getByRole('button', { name: '全部色卡' }).click()
+  await replaceDialog.getByPlaceholder('搜索色号、名称或 HEX').fill('F3')
+  await replaceDialog.getByRole('button', { name: /F3/ }).click()
+  await replaceDialog.getByRole('button', { name: '替换全部 1 格' }).click()
+  await expect(page.getByText('已将 C5 替换为 F3 · 可撤销')).toBeVisible()
   const replacedPixel = await canvas.evaluate((element) => {
     const target = element as HTMLCanvasElement
     const scale = target.width / target.clientWidth
@@ -205,7 +295,7 @@ test('searches colors and applies production editing helpers', async ({
   })
   expect(mirroredPixel).toEqual([247, 73, 65])
   await page.getByRole('button', { name: '撤销' }).click()
-  await expect(page.locator('.summary-panel strong').first()).toHaveText('1')
+  await expect(page.locator('.summary-panel h2')).toContainText('1 颗')
 })
 
 test('renders a realistic bead preview and exports an inventory-aware CSV', async ({
@@ -215,8 +305,9 @@ test('renders a realistic bead preview and exports an inventory-aware CSV', asyn
   await page.getByLabel('C5 库存数量').fill('7')
   await page.getByLabel('C5 库存数量').press('Tab')
   await page.getByRole('link', { name: '图纸编辑器', exact: true }).click()
+  await openFullEditor(page)
   const canvas = page.getByLabel('拼豆图纸画布')
-  await page.getByRole('button', { name: 'C5 蓝青系 C5' }).click()
+  await chooseColor(page, 'C5 蓝青系 C5')
   await canvas.click({ position: { x: 12, y: 12 } })
 
   await page.getByRole('button', { name: '成品预览', exact: true }).click()
@@ -238,6 +329,7 @@ test('renders a realistic bead preview and exports an inventory-aware CSV', asyn
   expect(previewPixels.bead).toEqual([1, 172, 235])
   expect(previewPixels.hole).toEqual([255, 253, 249])
 
+  await page.getByRole('button', { name: '完成' }).click()
   const previewDownload = page.waitForEvent('download')
   await page.getByRole('button', { name: '导出成品预览' }).click()
   expect((await previewDownload).suggestedFilename()).toContain('成品预览.png')
@@ -256,8 +348,9 @@ test('requires a rectangle or lasso selection before filling', async ({
   page,
 }) => {
   await page.goto('/editor')
+  await openFullEditor(page)
   const canvas = page.getByLabel('拼豆图纸画布')
-  await page.getByRole('button', { name: /选区/ }).click()
+  await page.getByRole('button', { name: '选区 S' }).click()
 
   const fillSelection = page.getByRole('button', { name: /填充选区/ })
   await expect(fillSelection).toBeDisabled()
@@ -268,15 +361,16 @@ test('requires a rectangle or lasso selection before filling', async ({
   await page.mouse.move(bounds!.x + 54, bounds!.y + 54, { steps: 5 })
   await page.mouse.up()
 
-  await expect(page.getByText('已选 9 格')).toBeVisible()
+  await expect(page.getByText('已选择 9 格')).toBeVisible()
   await expect(fillSelection).toBeEnabled()
-  await page.getByRole('button', { name: 'C5 蓝青系 C5' }).click()
+  await chooseColor(page, 'C5 蓝青系 C5')
   await fillSelection.click()
-  await expect(page.locator('.summary-panel strong').first()).toHaveText('9')
+  await expect(page.locator('.summary-panel h2')).toContainText('9 颗')
   await expect(page.getByText('已用 C5 填充 9 格')).toBeVisible()
 
-  await page.getByRole('button', { name: '取消' }).click()
-  await expect(fillSelection).toBeDisabled()
+  await page.getByRole('button', { name: '取消选区' }).click()
+  await page.getByRole('button', { name: '选区 S' }).click()
+  await expect(page.getByText('在画布上拖动创建选区')).toBeVisible()
   await page.getByRole('button', { name: '套索' }).click()
   await page.mouse.move(bounds!.x + 4, bounds!.y + 4)
   await page.mouse.down()
@@ -285,7 +379,7 @@ test('requires a rectangle or lasso selection before filling', async ({
   await page.mouse.move(bounds!.x + 4, bounds!.y + 79, { steps: 3 })
   await page.mouse.move(bounds!.x + 4, bounds!.y + 4, { steps: 3 })
   await page.mouse.up()
-  await expect(page.getByText(/已选 \d+ 格/)).toBeVisible()
+  await expect(page.getByText(/已选择 \d+ 格/)).toBeVisible()
   await expect(fillSelection).toBeEnabled()
 })
 
@@ -304,9 +398,13 @@ test('uses Mard by default and tracks warehouse stock against live usage', async
   await page.getByLabel('C5 库存数量').press('Tab')
 
   await page.getByRole('link', { name: /回到图纸编辑器/ }).click()
-  await page.getByRole('button', { name: 'C5 蓝青系 C5' }).click()
+  await openFullEditor(page)
+  await chooseColor(page, 'C5 蓝青系 C5')
   await page.getByLabel('拼豆图纸画布').click({ position: { x: 12, y: 12 } })
-  await page.getByRole('link', { name: '豆仓', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: '全屏图纸精修' })
+    .getByRole('link', { name: '豆仓', exact: true })
+    .click()
 
   const warehouse = page.locator('.inventory-workspace')
   const c5Row = warehouse.getByRole('row', { name: /^C5 / })
@@ -321,7 +419,11 @@ test('keeps bean inventory on its own route outside the editor', async ({
 }) => {
   await page.goto('/editor')
   await expect(page.locator('.inventory-workspace')).toHaveCount(0)
-  await page.getByRole('link', { name: '前往豆仓' }).click()
+  await openFullEditor(page)
+  await page
+    .getByRole('dialog', { name: '全屏图纸精修' })
+    .getByRole('link', { name: '豆仓', exact: true })
+    .click()
 
   await expect(page).toHaveURL(/\/inventory$/)
   await expect(
@@ -391,6 +493,7 @@ test('reconstructs a blurry chart into a real SVG and opens it in the editor', a
 
   await page.getByRole('button', { name: /进入编辑器继续修改/ }).click()
   await expect(page).toHaveURL(/\/editor$/)
+  await openFullEditor(page)
   await expect(page.getByLabel('拼豆图纸画布')).toBeVisible()
 })
 
@@ -402,6 +505,7 @@ test('uploads and persists a non-exported tracing image with alignment controls'
     'aria-busy',
     'false',
   )
+  await openFullEditor(page)
   await page.getByLabel('上传临摹垫图').setInputFiles({
     name: 'trace.svg',
     mimeType: 'image/svg+xml',
@@ -455,6 +559,7 @@ test('uploads and persists a non-exported tracing image with alignment controls'
     )
     .toEqual([{ fileName: 'trace.svg', offsetX: 1, offsetY: 1, opacity: 0.64 }])
   await page.reload()
+  await openFullEditor(page)
   await expect(page.getByText('trace.svg')).toBeVisible()
   await expect(page.getByText('偏移：1，1')).toBeVisible()
   await expect(page.getByText('64%')).toBeVisible()

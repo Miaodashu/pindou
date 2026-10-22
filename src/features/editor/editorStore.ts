@@ -9,10 +9,6 @@ import { genericDigitalPalette } from '@/domain/palette/genericPalette'
 import { mard221Palette } from '@/domain/palette/mardPalette'
 import { parsePaletteDocument } from '@/domain/palette/parsePalette'
 import type { BeadPalette } from '@/domain/palette/types'
-import {
-  createProjectFile,
-  parseProjectFile,
-} from '@/domain/project/projectFile'
 import { createPattern } from '@/domain/pattern/createPattern'
 import type { CellEdit, PatternDocument } from '@/domain/pattern/types'
 import {
@@ -26,7 +22,7 @@ import {
   saveTracingAsset,
 } from '@/infrastructure/persistence/patternRepository'
 
-export type EditorTool = 'pencil' | 'eraser' | 'picker' | 'select'
+export type EditorTool = 'move' | 'pencil' | 'eraser' | 'picker' | 'select'
 
 const MAX_HISTORY = 100
 
@@ -47,6 +43,8 @@ export const useEditorStore = defineStore('editor', () => {
   const tracingOpacity = ref(0.52)
   const tracingOffsetX = ref(0)
   const tracingOffsetY = ref(0)
+  const tracingScaleX = ref(1)
+  const tracingScaleY = ref(1)
   let tracingImageBlob: Blob | undefined
   let saveTimer: number | undefined
   let tracingSaveTimer: number | undefined
@@ -142,6 +140,8 @@ export const useEditorStore = defineStore('editor', () => {
     tracingOpacity.value = 0.52
     tracingOffsetX.value = 0
     tracingOffsetY.value = 0
+    tracingScaleX.value = 1
+    tracingScaleY.value = 1
   }
 
   async function loadTracingForPattern(patternId: string) {
@@ -160,6 +160,8 @@ export const useEditorStore = defineStore('editor', () => {
     tracingOpacity.value = saved.opacity
     tracingOffsetX.value = saved.offsetX
     tracingOffsetY.value = saved.offsetY
+    tracingScaleX.value = saved.scaleX ?? 1
+    tracingScaleY.value = saved.scaleY ?? 1
   }
 
   function scheduleTracingSave() {
@@ -180,6 +182,8 @@ export const useEditorStore = defineStore('editor', () => {
             opacity: tracingOpacity.value,
             offsetX: tracingOffsetX.value,
             offsetY: tracingOffsetY.value,
+            scaleX: tracingScaleX.value,
+            scaleY: tracingScaleY.value,
             updatedAt: new Date().toISOString(),
           }),
         )
@@ -200,6 +204,8 @@ export const useEditorStore = defineStore('editor', () => {
     tracingVisible.value = true
     tracingOffsetX.value = 0
     tracingOffsetY.value = 0
+    tracingScaleX.value = 1
+    tracingScaleY.value = 1
     scheduleTracingSave()
   }
 
@@ -209,6 +215,8 @@ export const useEditorStore = defineStore('editor', () => {
       opacity: number
       offsetX: number
       offsetY: number
+      scaleX: number
+      scaleY: number
     }>,
   ) {
     if (settings.visible !== undefined) tracingVisible.value = settings.visible
@@ -220,6 +228,12 @@ export const useEditorStore = defineStore('editor', () => {
     }
     if (settings.offsetY !== undefined) {
       tracingOffsetY.value = Math.max(-300, Math.min(300, settings.offsetY))
+    }
+    if (settings.scaleX !== undefined) {
+      tracingScaleX.value = Math.max(0.25, Math.min(4, settings.scaleX))
+    }
+    if (settings.scaleY !== undefined) {
+      tracingScaleY.value = Math.max(0.25, Math.min(4, settings.scaleY))
     }
     scheduleTracingSave()
   }
@@ -365,23 +379,6 @@ export const useEditorStore = defineStore('editor', () => {
     }
   }
 
-  function importProject(value: unknown) {
-    const project = parseProjectFile(value)
-    palette.value = project.palette
-    pattern.value = project.pattern
-    selectedColor.value = 1
-    undoStack.value = []
-    redoStack.value = []
-    persistPalette(project.palette)
-    void loadInventoryForPalette(project.palette.id)
-    void loadTracingForPattern(project.pattern.id)
-    touch()
-  }
-
-  function exportProject() {
-    return createProjectFile(pattern.value, palette.value)
-  }
-
   function installPalette(value: unknown) {
     const installed = parsePaletteDocument(value)
     palette.value = installed
@@ -419,6 +416,8 @@ export const useEditorStore = defineStore('editor', () => {
     tracingOpacity,
     tracingOffsetX,
     tracingOffsetY,
+    tracingScaleX,
+    tracingScaleY,
     hydrate,
     applyEdits,
     replaceCells,
@@ -429,8 +428,6 @@ export const useEditorStore = defineStore('editor', () => {
     newPattern,
     loadReconstruction,
     rename,
-    importProject,
-    exportProject,
     installPalette,
     setInventoryStock,
     setTracingImage,

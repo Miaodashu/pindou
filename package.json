@@ -25,6 +25,7 @@
     "@fontsource/montserrat": "^5.3.0",
     "@lucide/vue": "^1.59.0",
     "@techstark/opencv-js": "^5.0.0-release.1",
+    "cropperjs": "^2.3.1",
     "idb": "^8.0.4",
     "pinia": "^4.1.0",
     "vue": "^3.5.44",

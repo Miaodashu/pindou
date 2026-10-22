@@ -13,29 +13,41 @@ import type { EditorTool } from './editorStore'
 
 type PatternViewMode = 'construction' | 'color-block' | 'bead-preview'
 
-const props = defineProps<{
-  pattern: PatternDocument
-  palette: BeadPalette
-  revision: number
-  zoom: number
-  tool: EditorTool
-  selectedColor: number
-  viewMode: PatternViewMode
-  showGrid: boolean
-  showGuides: boolean
-  selection: number[]
-  selectionMode: SelectionMode
-  tracingImageUrl: string
-  tracingVisible: boolean
-  tracingOpacity: number
-  tracingOffsetX: number
-  tracingOffsetY: number
-}>()
+const props = withDefaults(
+  defineProps<{
+    pattern: PatternDocument
+    palette: BeadPalette
+    revision: number
+    zoom: number
+    tool: EditorTool
+    selectedColor: number
+    viewMode: PatternViewMode
+    showGrid: boolean
+    showGuides: boolean
+    selection: number[]
+    selectionMode: SelectionMode
+    tracingImageUrl: string
+    tracingVisible: boolean
+    tracingOpacity: number
+    tracingOffsetX: number
+    tracingOffsetY: number
+    tracingScaleX?: number
+    tracingScaleY?: number
+    tracingDraggable?: boolean
+  }>(),
+  {
+    tracingScaleX: 1,
+    tracingScaleY: 1,
+    tracingDraggable: false,
+  },
+)
 
 const emit = defineEmits<{
   apply: [edits: CellEdit[]]
   pickColor: [colorIndex: number]
   selectionChange: [indexes: number[]]
+  pan: [delta: { x: number; y: number }]
+  tracingMove: [delta: { x: number; y: number }]
 }>()
 
 const canvas = ref<HTMLCanvasElement>()
@@ -46,6 +58,19 @@ let selecting = false
 let selectionStart: GridPoint | undefined
 let selectionEnd: GridPoint | undefined
 let lassoPoints: GridPoint[] = []
+let panning:
+  | {
+      x: number
+      y: number
+    }
+  | undefined
+let tracingDragging:
+  | {
+      x: number
+      y: number
+    }
+  | undefined
+let tracingDragDelta = { x: 0, y: 0 }
 let tracingImage: HTMLImageElement | undefined
 let tracingLoadToken = 0
 
@@ -242,10 +267,14 @@ function drawTracingOverlay() {
     logicalWidth / image.naturalWidth,
     logicalHeight / image.naturalHeight,
   )
-  const width = image.naturalWidth * scale
-  const height = image.naturalHeight * scale
-  const x = (logicalWidth - width) / 2 + props.tracingOffsetX * size
-  const y = (logicalHeight - height) / 2 + props.tracingOffsetY * size
+  const width = image.naturalWidth * scale * props.tracingScaleX
+  const height = image.naturalHeight * scale * props.tracingScaleY
+  const x =
+    (logicalWidth - width) / 2 +
+    (props.tracingOffsetX + tracingDragDelta.x) * size
+  const y =
+    (logicalHeight - height) / 2 +
+    (props.tracingOffsetY + tracingDragDelta.y) * size
 
   context.save()
   context.setTransform(
@@ -444,7 +473,18 @@ function paintLine(
 }
 
 function handlePointerDown(event: PointerEvent) {
-  if (event.button !== 0) return
+  if (event.button !== 0 && event.button !== 1) return
+  if (event.button === 0 && props.tracingDraggable && props.tracingVisible) {
+    tracingDragging = { x: event.clientX, y: event.clientY }
+    tracingDragDelta = { x: 0, y: 0 }
+    canvas.value?.setPointerCapture(event.pointerId)
+    return
+  }
+  if (props.tool === 'move' || event.button === 1) {
+    panning = { x: event.clientX, y: event.clientY }
+    canvas.value?.setPointerCapture(event.pointerId)
+    return
+  }
   const cell = getCell(event)
   if (!cell) return
 
@@ -474,6 +514,21 @@ function handlePointerDown(event: PointerEvent) {
 }
 
 function handlePointerMove(event: PointerEvent) {
+  if (tracingDragging) {
+    tracingDragDelta = {
+      x: (event.clientX - tracingDragging.x) / cellSize.value,
+      y: (event.clientY - tracingDragging.y) / cellSize.value,
+    }
+    render()
+    return
+  }
+  if (panning) {
+    const x = event.clientX
+    const y = event.clientY
+    emit('pan', { x: panning.x - x, y: panning.y - y })
+    panning = { x, y }
+    return
+  }
   if (selecting) {
     const point = getGridPoint(event)
     if (!point) return
@@ -499,6 +554,18 @@ function handlePointerMove(event: PointerEvent) {
 }
 
 function commitInteraction() {
+  if (tracingDragging) {
+    const delta = tracingDragDelta
+    tracingDragging = undefined
+    tracingDragDelta = { x: 0, y: 0 }
+    if (delta.x || delta.y) emit('tracingMove', delta)
+    render()
+    return
+  }
+  if (panning) {
+    panning = undefined
+    return
+  }
   if (selecting) {
     selecting = false
     const indexes =
@@ -561,6 +628,8 @@ watch(
     props.tracingOpacity,
     props.tracingOffsetX,
     props.tracingOffsetY,
+    props.tracingScaleX,
+    props.tracingScaleY,
   ],
   () => nextTick(render),
 )
@@ -599,6 +668,8 @@ onMounted(render)
       ref="canvas"
       class="pattern-canvas"
       :class="{
+        'is-moving': tool === 'move',
+        'is-tracing-moving': tracingDraggable && tracingVisible,
         'is-picker': tool === 'picker',
         'is-selecting': tool === 'select',
       }"
@@ -727,6 +798,22 @@ onMounted(render)
 
 .pattern-canvas.is-picker {
   cursor: copy;
+}
+
+.pattern-canvas.is-moving {
+  cursor: grab;
+}
+
+.pattern-canvas.is-moving:active {
+  cursor: grabbing;
+}
+
+.pattern-canvas.is-tracing-moving {
+  cursor: move;
+}
+
+.pattern-canvas.is-tracing-moving:active {
+  cursor: grabbing;
 }
 
 .pattern-canvas.is-selecting {

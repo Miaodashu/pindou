@@ -17,6 +17,8 @@ export interface TracingAssetRecord {
   opacity: number
   offsetX: number
   offsetY: number
+  scaleX?: number
+  scaleY?: number
   updatedAt: string
 }
 
