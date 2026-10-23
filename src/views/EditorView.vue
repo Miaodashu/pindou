@@ -28,7 +28,7 @@ import { useEditorStore, type EditorTool } from '@/features/editor/editorStore'
 import PalettePanel from '@/features/palette/PalettePanel.vue'
 import TracingImagePanel from '@/features/tracing/TracingImagePanel.vue'
 
-type PatternViewMode = 'construction' | 'color-block' | 'bead-preview'
+type PatternViewMode = 'construction' | 'color-block'
 
 interface PatternCanvasApi {
   exportPng: (
@@ -102,7 +102,6 @@ const tools: Array<{
 const viewModes: Array<{ id: PatternViewMode; label: string }> = [
   { id: 'color-block', label: '色块图' },
   { id: 'construction', label: '施工图' },
-  { id: 'bead-preview', label: '成品预览' },
 ]
 
 const editorUsage = computed(() => {
@@ -191,12 +190,7 @@ function download(blob: Blob, name: string) {
 async function exportPng(mode: PatternViewMode) {
   if (!canvas.value) await nextTick()
   if (!canvas.value) return
-  const suffix =
-    mode === 'construction'
-      ? '施工图'
-      : mode === 'bead-preview'
-        ? '成品预览'
-        : '色块图'
+  const suffix = mode === 'construction' ? '施工图' : '色块图'
   const includeGrid =
     mode === 'construction' || (mode === 'color-block' && showGrid.value)
   download(
@@ -341,6 +335,20 @@ function mirrorPattern(axis: 'horizontal' | 'vertical') {
   notify(axis === 'horizontal' ? '图纸已水平翻转' : '图纸已垂直翻转')
 }
 
+function clearCanvas() {
+  if (filledCellCount.value === 0) return
+  if (
+    !window.confirm(
+      `确定要清空画布中的 ${filledCellCount.value} 颗豆子吗？此操作可撤销。`,
+    )
+  ) {
+    return
+  }
+  const cleared = store.clearPattern()
+  selection.value = []
+  notify(`已清空 ${cleared} 格 · 可撤销`)
+}
+
 function isFormTarget(target: EventTarget | null) {
   return (
     target instanceof HTMLInputElement ||
@@ -423,9 +431,6 @@ onBeforeUnmount(() => {
         <button type="button" @click="openEditor">编辑当前图纸</button>
         <button type="button" @click="exportPng('construction')">
           导出施工图
-        </button>
-        <button type="button" @click="exportPng('bead-preview')">
-          导出成品预览
         </button>
         <button type="button" @click="exportMaterialsCsv">导出用量 CSV</button>
         <button class="primary" type="button" @click="exportPng('color-block')">
@@ -615,6 +620,14 @@ onBeforeUnmount(() => {
                 </button>
               </div>
               <div class="canvas-actions">
+                <button
+                  class="danger-action"
+                  type="button"
+                  :disabled="filledCellCount === 0"
+                  @click="clearCanvas"
+                >
+                  <Trash2 :size="15" aria-hidden="true" />一键清空画布
+                </button>
                 <button type="button" @click="mirrorPattern('horizontal')">
                   水平翻转
                 </button>
@@ -1012,6 +1025,12 @@ kbd {
 .canvas-viewbar button {
   min-height: 32px;
   padding: 6px 9px;
+}
+
+.canvas-actions .danger-action {
+  border-color: #dcaaa5;
+  color: #a43b32;
+  background: #fff5f3;
 }
 
 .zoom-control {

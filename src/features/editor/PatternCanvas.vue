@@ -11,7 +11,7 @@ import type { BeadPalette } from '@/domain/palette/types'
 import type { CellEdit, PatternDocument } from '@/domain/pattern/types'
 import type { EditorTool } from './editorStore'
 
-type PatternViewMode = 'construction' | 'color-block' | 'bead-preview'
+type PatternViewMode = 'construction' | 'color-block'
 
 const props = withDefaults(
   defineProps<{
@@ -128,71 +128,24 @@ function drawGrid(
     if (!color) continue
     const x = (index % props.pattern.width) * cellSize
     const y = Math.floor(index / props.pattern.width) * cellSize
-    if (viewMode === 'color-block') {
-      context.fillStyle = color.hex
-      context.fillRect(x, y, cellSize, cellSize)
-    } else if (viewMode === 'construction') {
-      const inset = Math.max(1.2, cellSize * 0.11)
-      context.beginPath()
-      context.arc(
-        x + cellSize / 2,
-        y + cellSize / 2,
-        Math.max(1, cellSize / 2 - inset),
-        0,
-        Math.PI * 2,
+    context.fillStyle = color.hex
+    context.fillRect(x, y, cellSize, cellSize)
+
+    if (viewMode === 'construction' && cellSize >= 10) {
+      const brightness =
+        (color.rgb.r * 299 + color.rgb.g * 587 + color.rgb.b * 114) / 1000
+      context.fillStyle = brightness < 135 ? '#ffffff' : '#251e18'
+      const fontSize = Math.max(
+        6,
+        Math.min(
+          cellSize * 0.32,
+          cellSize / Math.max(1, color.code.length * 0.58),
+        ),
       )
-      context.fillStyle = color.hex
-      context.fill()
-      context.strokeStyle = 'rgb(32 28 24 / 20%)'
-      context.lineWidth = 0.7
-      context.stroke()
-
-      if (cellSize >= 24) {
-        const brightness =
-          (color.rgb.r * 299 + color.rgb.g * 587 + color.rgb.b * 114) / 1000
-        context.fillStyle = brightness < 135 ? '#ffffff' : '#251e18'
-        context.font = `700 ${Math.max(8, cellSize * 0.34)}px ui-sans-serif, system-ui`
-        context.textAlign = 'center'
-        context.textBaseline = 'middle'
-        context.fillText(color.symbol, x + cellSize / 2, y + cellSize / 2 + 0.5)
-      }
-    } else {
-      const centerX = x + cellSize / 2
-      const centerY = y + cellSize / 2
-      const radius = Math.max(1, cellSize * 0.43)
-      context.save()
-      context.shadowColor = 'rgb(43 31 23 / 22%)'
-      context.shadowBlur = Math.max(1, cellSize * 0.08)
-      context.shadowOffsetY = Math.max(0.5, cellSize * 0.045)
-      context.beginPath()
-      context.arc(centerX, centerY, radius, 0, Math.PI * 2)
-      context.fillStyle = color.hex
-      context.fill()
-      context.shadowColor = 'transparent'
-      context.strokeStyle = 'rgb(32 28 24 / 24%)'
-      context.lineWidth = Math.max(0.6, cellSize * 0.035)
-      context.stroke()
-
-      context.beginPath()
-      context.arc(
-        centerX - radius * 0.2,
-        centerY - radius * 0.24,
-        radius * 0.52,
-        Math.PI * 1.08,
-        Math.PI * 1.68,
-      )
-      context.strokeStyle = 'rgb(255 255 255 / 42%)'
-      context.lineWidth = Math.max(0.8, cellSize * 0.055)
-      context.stroke()
-
-      context.beginPath()
-      context.arc(centerX, centerY, radius * 0.22, 0, Math.PI * 2)
-      context.fillStyle = '#fffdf9'
-      context.fill()
-      context.strokeStyle = 'rgb(32 28 24 / 25%)'
-      context.lineWidth = Math.max(0.6, cellSize * 0.03)
-      context.stroke()
-      context.restore()
+      context.font = `700 ${fontSize}px ui-sans-serif, system-ui`
+      context.textAlign = 'center'
+      context.textBaseline = 'middle'
+      context.fillText(color.code, x + cellSize / 2, y + cellSize / 2 + 0.5)
     }
   }
 

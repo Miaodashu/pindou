@@ -87,4 +87,21 @@ describe('quantizeToPalette', () => {
     expect(result.cells).toEqual([1, 2, 3])
     expect(result.selectedColorIndexes).toHaveLength(3)
   })
+
+  it('keeps the legacy greedy quantizer available without swap refinement', () => {
+    const image = makeImageData(
+      [0, 0, 0, 255, 255, 255, 255, 255, 255, 0, 0, 255],
+      3,
+      1,
+    )
+
+    const result = quantizeToPalette(image, palette, {
+      maxColors: 2,
+      strategy: 'balanced',
+      refinePalette: false,
+    })
+
+    expect(result.cells).toEqual([1, 3, 3])
+    expect(result.selectedColorIndexes).toEqual([0, 2])
+  })
 })

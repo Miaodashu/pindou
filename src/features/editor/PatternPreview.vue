@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { BeadPalette } from '@/domain/palette/types'
 
-export type PatternPreviewMode = 'grid' | 'codes' | 'beads' | 'boards'
+export type PatternPreviewMode = 'grid' | 'codes' | 'boards'
 
 const props = defineProps<{
   width: number
@@ -62,25 +62,6 @@ function render() {
     const x = (index % props.width) * cellSize
     const y = Math.floor(index / props.width) * cellSize
 
-    if (props.mode === 'beads') {
-      const radius = cellSize * 0.43
-      context.beginPath()
-      context.arc(x + cellSize / 2, y + cellSize / 2, radius, 0, Math.PI * 2)
-      context.fillStyle = color.hex
-      context.fill()
-      context.beginPath()
-      context.arc(
-        x + cellSize / 2,
-        y + cellSize / 2,
-        Math.max(0.7, radius * 0.22),
-        0,
-        Math.PI * 2,
-      )
-      context.fillStyle = '#fffdf9'
-      context.fill()
-      return
-    }
-
     context.fillStyle = color.hex
     context.fillRect(x, y, cellSize, cellSize)
     if (props.mode === 'codes' && cellSize >= 12) {
@@ -94,20 +75,18 @@ function render() {
     }
   })
 
-  if (props.mode !== 'beads') {
-    context.beginPath()
-    for (let x = 0; x <= props.width; x += 1) {
-      context.moveTo(x * cellSize + 0.5, 0)
-      context.lineTo(x * cellSize + 0.5, logicalHeight)
-    }
-    for (let y = 0; y <= props.height; y += 1) {
-      context.moveTo(0, y * cellSize + 0.5)
-      context.lineTo(logicalWidth, y * cellSize + 0.5)
-    }
-    context.strokeStyle = 'rgb(57 49 43 / 18%)'
-    context.lineWidth = 1
-    context.stroke()
+  context.beginPath()
+  for (let x = 0; x <= props.width; x += 1) {
+    context.moveTo(x * cellSize + 0.5, 0)
+    context.lineTo(x * cellSize + 0.5, logicalHeight)
   }
+  for (let y = 0; y <= props.height; y += 1) {
+    context.moveTo(0, y * cellSize + 0.5)
+    context.lineTo(logicalWidth, y * cellSize + 0.5)
+  }
+  context.strokeStyle = 'rgb(57 49 43 / 18%)'
+  context.lineWidth = 1
+  context.stroke()
 
   if (props.mode === 'boards') {
     context.beginPath()

@@ -19,7 +19,7 @@ import PatternPreview, {
 } from '@/features/editor/PatternPreview.vue'
 import ImageCropper from './ImageCropper.vue'
 import { convertImageInWorker } from './imageProcessorClient'
-import type { BackgroundMode } from './types'
+import type { BackgroundMode, ConversionPipelineVersion } from './types'
 
 interface CropperApi {
   getImageData: () => Promise<ImageData>
@@ -56,12 +56,18 @@ const croppedRatio = ref('')
 const generatedCells = ref<number[]>([])
 const previewMode = ref<PatternPreviewMode>('grid')
 const replaceFrom = ref<number>()
+const pipelineLabels: Record<ConversionPipelineVersion, string> = {
+  'v1-legacy': '经典采样 V1',
+  'v2-adaptive': '自适应采样 V2',
+}
 const report = ref<{
   engine: string
   averageDeltaE: number
   maximumDeltaE: number
   lowConfidenceCells: number
   colorCount: number
+  cleanedCells: number
+  pipelineVersion: ConversionPipelineVersion
 }>()
 
 const physicalSize = computed(() => ({
@@ -139,6 +145,8 @@ async function processSource(source: ImageData) {
       maximumDeltaE: processed.maximumDeltaE,
       lowConfidenceCells: processed.lowConfidenceCells,
       colorCount: processed.selectedColorIndexes.length,
+      cleanedCells: processed.cleanedCells,
+      pipelineVersion: processed.pipelineVersion,
     }
     status.value = 'complete'
     cropOpen.value = false
@@ -344,7 +352,6 @@ onBeforeUnmount(() => {
                 v-for="item in [
                   ['grid', '网格'],
                   ['codes', '色号'],
-                  ['beads', '豆子'],
                   ['boards', '拼板'],
                 ] as const"
                 :key="item[0]"
@@ -418,9 +425,15 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-if="report" class="generation-report">
-          <span>{{ report.engine }}</span>
+          <span
+            >{{ report.engine }} ·
+            {{ pipelineLabels[report.pipelineVersion] }}</span
+          >
           <span>平均 ΔE {{ report.averageDeltaE.toFixed(1) }}</span>
           <span>待确认 {{ report.lowConfidenceCells }} 格</span>
+          <span v-if="report.cleanedCells"
+            >已清理 {{ report.cleanedCells }} 个孤立格</span
+          >
         </div>
       </div>
     </template>

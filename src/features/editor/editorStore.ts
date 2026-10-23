@@ -302,6 +302,14 @@ export const useEditorStore = defineStore('editor', () => {
     )
   }
 
+  function clearPattern() {
+    const edits = pattern.value.cells.flatMap((cell, index) =>
+      cell > 0 ? [{ index, before: cell, after: 0 }] : [],
+    )
+    applyEdits(edits)
+    return edits.length
+  }
+
   function mirrorPattern(axis: 'horizontal' | 'vertical') {
     const { width, height, cells } = pattern.value
     const mirrored = new Array<number>(cells.length).fill(0)
@@ -422,6 +430,7 @@ export const useEditorStore = defineStore('editor', () => {
     applyEdits,
     replaceCells,
     replaceColor,
+    clearPattern,
     mirrorPattern,
     undo,
     redo,

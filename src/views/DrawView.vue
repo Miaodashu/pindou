@@ -32,7 +32,7 @@ import PatternCanvas from '@/features/editor/PatternCanvas.vue'
 import { useEditorStore, type EditorTool } from '@/features/editor/editorStore'
 
 type CreateMode = 'blank' | 'trace'
-type PatternViewMode = 'construction' | 'color-block' | 'bead-preview'
+type PatternViewMode = 'construction' | 'color-block'
 type RightPanel = 'palette' | 'usage'
 
 interface PatternCanvasApi {
@@ -291,6 +291,20 @@ function eraseSelection() {
   notify(`已清空 ${changed.length} 格`)
 }
 
+function clearCanvas() {
+  if (filledCellCount.value === 0) return
+  if (
+    !window.confirm(
+      `确定要清空画布中的 ${filledCellCount.value} 颗豆子吗？此操作可撤销。`,
+    )
+  ) {
+    return
+  }
+  const cleared = store.clearPattern()
+  selection.value = []
+  notify(`已清空 ${cleared} 格 · 可撤销`)
+}
+
 function replaceColor(payload: {
   toColorIndex: number
   selectionOnly: boolean
@@ -336,12 +350,7 @@ function download(blob: Blob, name: string) {
 
 async function exportPng(mode: PatternViewMode) {
   if (!canvas.value) return
-  const suffix =
-    mode === 'construction'
-      ? '施工图'
-      : mode === 'bead-preview'
-        ? '成品预览'
-        : '色块图'
+  const suffix = mode === 'construction' ? '施工图' : '色块图'
   download(
     await canvas.value.exportPng(
       mode,
@@ -471,9 +480,6 @@ onBeforeUnmount(() => {
       <div class="export-actions">
         <button type="button" @click="exportPng('construction')">
           导出施工图
-        </button>
-        <button type="button" @click="exportPng('bead-preview')">
-          导出成品预览
         </button>
         <button type="button" @click="exportMaterialsCsv">导出用量 CSV</button>
         <button class="primary" type="button" @click="exportPng('color-block')">
@@ -838,19 +844,20 @@ onBeforeUnmount(() => {
             >
               施工
             </button>
-            <button
-              type="button"
-              :class="{ active: viewMode === 'bead-preview' }"
-              @click="viewMode = 'bead-preview'"
-            >
-              成品
-            </button>
           </div>
           <label><input v-model="showGrid" type="checkbox" />显示网格</label>
           <label
             ><input v-model="showGuides" type="checkbox" />中心参考线</label
           >
           <span>{{ pattern.width }} × {{ pattern.height }}</span>
+          <button
+            class="clear-canvas-button"
+            type="button"
+            :disabled="filledCellCount === 0"
+            @click="clearCanvas"
+          >
+            <Trash2 :size="14" aria-hidden="true" />一键清空画布
+          </button>
         </div>
 
         <div
@@ -1607,6 +1614,12 @@ button:disabled {
 
 .canvas-options input {
   accent-color: var(--rose-strong);
+}
+
+.canvas-options .clear-canvas-button {
+  border-color: #dcaaa5;
+  color: #a43b32;
+  background: #fff5f3;
 }
 
 .selection-actions {

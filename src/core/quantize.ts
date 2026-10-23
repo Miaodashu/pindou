@@ -1,4 +1,8 @@
 import { deltaE2000, rgbToLab } from '@/core/color'
+import {
+  conversionStrategyPresets,
+  type ConversionStrategy,
+} from '@/core/conversionStrategy'
 import type { BeadPalette, LabColor } from '@/domain/palette/types'
 
 export interface QuantizeOptions {
@@ -7,9 +11,10 @@ export interface QuantizeOptions {
   alphaThreshold?: number
   edgeMask?: Uint8Array
   edgeWeight?: number
+  refinePalette?: boolean
 }
 
-export type QuantizeStrategy = 'balanced' | 'closest' | 'few-colors'
+export type QuantizeStrategy = ConversionStrategy
 
 export interface QuantizeResult {
   cells: number[]
@@ -103,7 +108,9 @@ export function quantizeToPalette(
     palette.colors.map((color) => deltaE2000(sample.lab, color.lab)),
   )
   const selected: number[] = []
-  if (options.strategy === 'closest') {
+  const strategyPreset =
+    conversionStrategyPresets[options.strategy ?? 'balanced']
+  if (strategyPreset.usesFullPalette) {
     selected.push(...palette.colors.map((_, index) => index))
   } else {
     const currentBest = new Float64Array(samples.length).fill(
@@ -154,6 +161,79 @@ export function quantizeToPalette(
           distances[sampleIndex]?.[bestCandidate] ?? Number.POSITIVE_INFINITY,
         )
       }
+    }
+
+    // Greedy facility selection is fast but can lock an early, merely local
+    // choice into the final palette. Two deterministic swap-refinement rounds
+    // recover most of that loss without making the worker unbounded.
+    const refinementRounds = options.refinePalette === false ? 0 : 2
+    for (let refinement = 0; refinement < refinementRounds; refinement += 1) {
+      const bestPaletteIndex = new Int32Array(samples.length).fill(-1)
+      const bestDistance = new Float64Array(samples.length).fill(
+        Number.POSITIVE_INFINITY,
+      )
+      const secondDistance = new Float64Array(samples.length).fill(
+        Number.POSITIVE_INFINITY,
+      )
+      let currentTotal = 0
+
+      for (
+        let sampleIndex = 0;
+        sampleIndex < samples.length;
+        sampleIndex += 1
+      ) {
+        for (const paletteIndex of selected) {
+          const distance =
+            distances[sampleIndex]?.[paletteIndex] ?? Number.POSITIVE_INFINITY
+          if (distance < bestDistance[sampleIndex]!) {
+            secondDistance[sampleIndex] = bestDistance[sampleIndex]!
+            bestDistance[sampleIndex] = distance
+            bestPaletteIndex[sampleIndex] = paletteIndex
+          } else if (distance < secondDistance[sampleIndex]!) {
+            secondDistance[sampleIndex] = distance
+          }
+        }
+        currentTotal +=
+          bestDistance[sampleIndex]! * (samples[sampleIndex]?.weight ?? 1)
+      }
+
+      let bestSwapPosition = -1
+      let bestSwapCandidate = -1
+      let bestSwapTotal = currentTotal
+      for (let position = 0; position < selected.length; position += 1) {
+        const removed = selected[position]
+        for (
+          let candidate = 0;
+          candidate < palette.colors.length;
+          candidate += 1
+        ) {
+          if (selected.includes(candidate)) continue
+          let total = 0
+          for (
+            let sampleIndex = 0;
+            sampleIndex < samples.length;
+            sampleIndex += 1
+          ) {
+            const withoutRemoved =
+              bestPaletteIndex[sampleIndex] === removed
+                ? secondDistance[sampleIndex]!
+                : bestDistance[sampleIndex]!
+            total +=
+              Math.min(
+                withoutRemoved,
+                distances[sampleIndex]?.[candidate] ?? Number.POSITIVE_INFINITY,
+              ) * (samples[sampleIndex]?.weight ?? 1)
+          }
+          if (total < bestSwapTotal - 0.001) {
+            bestSwapTotal = total
+            bestSwapPosition = position
+            bestSwapCandidate = candidate
+          }
+        }
+      }
+
+      if (bestSwapPosition < 0 || bestSwapCandidate < 0) break
+      selected[bestSwapPosition] = bestSwapCandidate
     }
   }
 

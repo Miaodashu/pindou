@@ -86,7 +86,7 @@ const editorPreview = `${import.meta.env.BASE_URL}images/editor-preview.png`
       </div>
       <div class="story-metrics" aria-label="产品特点">
         <div><strong>221</strong><span>Mard 默认色号</span></div>
-        <div><strong>3</strong><span>图纸显示模式</span></div>
+        <div><strong>2</strong><span>图纸显示模式</span></div>
         <div><strong>100%</strong><span>浏览器本地处理</span></div>
       </div>
     </section>

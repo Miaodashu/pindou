@@ -2,6 +2,7 @@ import type { BeadPalette } from '@/domain/palette/types'
 import type { QuantizeStrategy } from '@/core/quantize'
 
 export type BackgroundMode = 'preserve' | 'remove-edge'
+export type ConversionPipelineVersion = 'v1-legacy' | 'v2-adaptive'
 
 export interface ConvertImageRequest {
   id: string
@@ -19,6 +20,7 @@ export interface ConvertImageRequest {
   maxColors: number
   strategy: QuantizeStrategy
   backgroundMode: BackgroundMode
+  pipelineVersion?: ConversionPipelineVersion
 }
 
 export interface ConvertImageSuccess {
@@ -30,6 +32,8 @@ export interface ConvertImageSuccess {
   averageDeltaE: number
   maximumDeltaE: number
   lowConfidenceCells: number
+  pipelineVersion: ConversionPipelineVersion
+  cleanedCells: number
 }
 
 export interface ConvertImageFailure {

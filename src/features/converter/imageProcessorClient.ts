@@ -2,6 +2,7 @@ import type { BeadPalette } from '@/domain/palette/types'
 import type { QuantizeStrategy } from '@/core/quantize'
 import type {
   BackgroundMode,
+  ConversionPipelineVersion,
   ConvertImageRequest,
   ConvertImageResponse,
   ConvertImageSuccess,
@@ -58,6 +59,7 @@ export function convertImageInWorker(
     maxColors: number
     strategy: QuantizeStrategy
     backgroundMode: BackgroundMode
+    pipelineVersion?: ConversionPipelineVersion
   },
 ): Promise<ConvertImageSuccess> {
   const id = crypto.randomUUID()
@@ -74,6 +76,7 @@ export function convertImageInWorker(
     maxColors: options.maxColors,
     strategy: options.strategy,
     backgroundMode: options.backgroundMode,
+    pipelineVersion: options.pipelineVersion ?? 'v2-adaptive',
   }
 
   return new Promise((resolve, reject) => {

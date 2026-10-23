@@ -16,7 +16,7 @@
 ## In scope
 
 - Vue 3 / TypeScript 工程与 AI 开发工作流
-- Canvas 2D 网格编辑、移动、填充、撤销/重做和成品/施工 PNG 导出
+- Canvas 2D 网格编辑、移动、填充、撤销/重做和色块/带色号施工 PNG 导出
 - OpenCV.js/WASM Worker 图片处理与 Canvas 降级路径
 - CIEDE2000 色卡量化、颜色限制、边缘权重和质量提示
 - IndexedDB 自动保存、独立豆仓与临摹垫图
