@@ -13,6 +13,7 @@ import { createPattern } from '@/domain/pattern/createPattern'
 import type { CellEdit, PatternDocument } from '@/domain/pattern/types'
 import {
   getPalette,
+  getPattern,
   getLatestPattern,
   getInventory,
   getTracingAsset,
@@ -332,6 +333,49 @@ export const useEditorStore = defineStore('editor', () => {
     touch()
   }
 
+  async function createDerivedPattern(
+    width: number,
+    height: number,
+    cells: number[],
+    title: string,
+  ) {
+    if (cells.length !== width * height) {
+      throw new Error('派生图纸与目标网格尺寸不一致。')
+    }
+    const sourceSnapshot: PatternDocument = {
+      ...pattern.value,
+      cells: [...pattern.value.cells],
+    }
+    await savePattern(sourceSnapshot)
+    const derived = createPattern(width, height, palette.value.id)
+    derived.title = title.trim().slice(0, 120) || '小尺寸图纸'
+    derived.cells = [...cells]
+    pattern.value = derived
+    undoStack.value = []
+    redoStack.value = []
+    resetTracing()
+    await savePattern(derived)
+    touch()
+    return sourceSnapshot
+  }
+
+  async function restorePatternSnapshot(snapshot: PatternDocument) {
+    if (snapshot.cells.length !== snapshot.width * snapshot.height) {
+      throw new Error('恢复图纸的数据尺寸不一致。')
+    }
+    await savePattern(pattern.value)
+    pattern.value = { ...snapshot, cells: [...snapshot.cells] }
+    undoStack.value = []
+    redoStack.value = []
+    resetTracing()
+    touch()
+  }
+
+  async function getPatternSnapshot(patternId: string) {
+    const saved = await getPattern(patternId)
+    return saved ? { ...saved, cells: [...saved.cells] } : undefined
+  }
+
   function loadReconstruction(
     width: number,
     height: number,
@@ -435,6 +479,9 @@ export const useEditorStore = defineStore('editor', () => {
     undo,
     redo,
     newPattern,
+    createDerivedPattern,
+    getPatternSnapshot,
+    restorePatternSnapshot,
     loadReconstruction,
     rename,
     installPalette,

@@ -6,17 +6,33 @@ import {
   computeSourceEdgeMask,
   edgePreservingFilter,
   sampleImageToGrid,
+  selectAdaptiveEdgeThresholds,
   selectAdaptiveSampleSize,
 } from '@/core/adaptiveSampling'
 import { removeEdgeBackground } from '@/core/backgroundRemoval'
 import { conversionStrategyPresets } from '@/core/conversionStrategy'
+import { assessDetailCapacity } from '@/core/detailCapacity'
+import { selectGridAlignment } from '@/core/gridAlignment'
 import { quantizeToPalette } from '@/core/quantize'
 import { cleanupSpatialRegions } from '@/core/spatialCleanup'
+import {
+  applyControlledDithering,
+  measurePatternError,
+  optimizePatternStructure,
+} from '@/core/structuralOptimization'
 import type { ConvertImageRequest, ConvertImageResponse } from './types'
 
 type OpenCv = typeof import('@techstark/opencv-js')
 
 let openCvPromise: Promise<OpenCv> | undefined
+
+function hasStructuralCapabilities(
+  pipelineVersion: ConvertImageRequest['pipelineVersion'],
+) {
+  return (
+    pipelineVersion === 'v3-structural' || pipelineVersion === 'v4-line-aware'
+  )
+}
 
 function getOpenCv(): Promise<OpenCv> {
   openCvPromise ??= (async () => {
@@ -42,18 +58,25 @@ function sourceImageData(request: ConvertImageRequest) {
 
 async function processAdaptiveWithOpenCv(request: ConvertImageRequest) {
   const cv = await getOpenCv()
-  const filtered = edgePreservingFilter(
-    sourceImageData(request),
-    conversionStrategyPresets[request.strategy].filterSigmaColor,
-  )
+  const original = sourceImageData(request)
+  const filtered =
+    request.contentMode === 'pixel-art'
+      ? original
+      : edgePreservingFilter(
+          original,
+          conversionStrategyPresets[request.strategy].filterSigmaColor,
+        )
   const source = cv.matFromImageData(filtered)
   const grayscale = new cv.Mat()
   const edges = new cv.Mat()
 
   try {
     cv.cvtColor(source, grayscale, cv.COLOR_RGBA2GRAY)
-    cv.Canny(grayscale, edges, 54, 118)
     const sourceEdges = computeSourceEdgeMask(filtered)
+    const thresholds = hasStructuralCapabilities(request.pipelineVersion)
+      ? selectAdaptiveEdgeThresholds(sourceEdges)
+      : { low: 54, high: 118 }
+    cv.Canny(grayscale, edges, thresholds.low, thresholds.high)
     for (let index = 0; index < sourceEdges.length; index += 1) {
       sourceEdges[index] = Math.max(
         sourceEdges[index] ?? 0,
@@ -61,6 +84,15 @@ async function processAdaptiveWithOpenCv(request: ConvertImageRequest) {
       )
     }
 
+    const alignment = hasStructuralCapabilities(request.pipelineVersion)
+      ? selectGridAlignment(
+          sourceEdges,
+          filtered.width,
+          filtered.height,
+          request.target.width,
+          request.target.height,
+        )
+      : { offsetX: 0, offsetY: 0, score: 0, gain: 0 }
     const sampled = sampleImageToGrid(
       filtered,
       request.target.width,
@@ -72,13 +104,20 @@ async function processAdaptiveWithOpenCv(request: ConvertImageRequest) {
           filtered.height,
           request.target.width,
           request.target.height,
+          request.contentMode,
         ),
+        offsetX: alignment.offsetX,
+        offsetY: alignment.offsetY,
+        collectCellFeatures: hasStructuralCapabilities(request.pipelineVersion),
+        contentMode: request.contentMode,
       },
     )
 
     return {
       pixels: sampled.imageData.data,
       edges: sampled.edgeMask,
+      cellFeatures: sampled.cellFeatures,
+      alignment,
     }
   } finally {
     source.delete()
@@ -88,26 +127,50 @@ async function processAdaptiveWithOpenCv(request: ConvertImageRequest) {
 }
 
 function processAdaptiveFallback(request: ConvertImageRequest) {
-  const filtered = edgePreservingFilter(
-    sourceImageData(request),
-    conversionStrategyPresets[request.strategy].filterSigmaColor,
-  )
+  const original = sourceImageData(request)
+  const filtered =
+    request.contentMode === 'pixel-art'
+      ? original
+      : edgePreservingFilter(
+          original,
+          conversionStrategyPresets[request.strategy].filterSigmaColor,
+        )
+  const sourceEdges = computeSourceEdgeMask(filtered)
+  const alignment = hasStructuralCapabilities(request.pipelineVersion)
+    ? selectGridAlignment(
+        sourceEdges,
+        filtered.width,
+        filtered.height,
+        request.target.width,
+        request.target.height,
+      )
+    : { offsetX: 0, offsetY: 0, score: 0, gain: 0 }
   const sampled = sampleImageToGrid(
     filtered,
     request.target.width,
     request.target.height,
-    computeSourceEdgeMask(filtered),
+    sourceEdges,
     {
       sampleSize: selectAdaptiveSampleSize(
         filtered.width,
         filtered.height,
         request.target.width,
         request.target.height,
+        request.contentMode,
       ),
+      offsetX: alignment.offsetX,
+      offsetY: alignment.offsetY,
+      collectCellFeatures: hasStructuralCapabilities(request.pipelineVersion),
+      contentMode: request.contentMode,
     },
   )
 
-  return { pixels: sampled.imageData.data, edges: sampled.edgeMask }
+  return {
+    pixels: sampled.imageData.data,
+    edges: sampled.edgeMask,
+    cellFeatures: sampled.cellFeatures,
+    alignment,
+  }
 }
 
 async function processLegacyWithOpenCv(request: ConvertImageRequest) {
@@ -131,6 +194,8 @@ async function processLegacyWithOpenCv(request: ConvertImageRequest) {
     return {
       pixels: new Uint8ClampedArray(resized.data),
       edges: new Uint8Array(edges.data),
+      cellFeatures: undefined,
+      alignment: { offsetX: 0, offsetY: 0, score: 0, gain: 0 },
     }
   } finally {
     source.delete()
@@ -173,7 +238,12 @@ function processLegacyFallback(request: ConvertImageRequest) {
     request.target.width,
     request.target.height,
   )
-  return { pixels: image.data, edges: computeSourceEdgeMask(image) }
+  return {
+    pixels: image.data,
+    edges: computeSourceEdgeMask(image),
+    cellFeatures: undefined,
+    alignment: { offsetX: 0, offsetY: 0, score: 0, gain: 0 },
+  }
 }
 
 async function processWithOpenCv(request: ConvertImageRequest) {
@@ -195,7 +265,8 @@ self.addEventListener(
     if (request.type !== 'resize') return
 
     try {
-      const pipelineVersion = request.pipelineVersion ?? 'v2-adaptive'
+      const pipelineVersion = request.pipelineVersion ?? 'v4-line-aware'
+      request.pipelineVersion = pipelineVersion
       let engine: 'opencv-wasm' | 'canvas-fallback' = 'opencv-wasm'
       let result
       try {
@@ -223,18 +294,45 @@ self.addEventListener(
         maxColors: request.maxColors,
         strategy: request.strategy,
         edgeMask: result.edges,
-        refinePalette: pipelineVersion === 'v2-adaptive',
+        refinePalette: pipelineVersion !== 'v1-legacy',
+        cellFeatures: hasStructuralCapabilities(pipelineVersion)
+          ? result.cellFeatures
+          : undefined,
+        contentMode: request.contentMode,
       })
+      const protectedDetails = Uint8Array.from(
+        result.cellFeatures?.map((feature) =>
+          (request.contentMode === 'illustration' && feature.protectedDetail) ||
+          (request.contentMode === 'photo' && feature.edgeStrength >= 96)
+            ? 1
+            : 0,
+        ) ?? [],
+      )
+      const structured = hasStructuralCapabilities(pipelineVersion)
+        ? optimizePatternStructure(
+            quantized.cells,
+            quantized.candidateAssignments,
+            request.target.width,
+            request.target.height,
+            sampledImage,
+            request.palette,
+            result.edges,
+            request.strategy,
+            protectedDetails,
+          )
+        : { cells: quantized.cells, changedCells: 0 }
       const cleaned =
-        pipelineVersion === 'v2-adaptive'
+        pipelineVersion !== 'v1-legacy'
           ? cleanupSpatialRegions(
-              quantized.cells,
+              structured.cells,
               request.target.width,
               request.target.height,
               sampledImage,
               request.palette,
               result.edges,
               request.strategy,
+              protectedDetails,
+              request.contentMode === 'photo',
             )
           : {
               cells: quantized.cells,
@@ -242,10 +340,35 @@ self.addEventListener(
               averageDeltaE: quantized.averageDeltaE,
               maximumDeltaE: quantized.maximumDeltaE,
             }
-      const cells = Uint16Array.from(cleaned.cells)
+      const dithered =
+        hasStructuralCapabilities(pipelineVersion) &&
+        request.contentMode !== 'pixel-art'
+          ? applyControlledDithering(
+              cleaned.cells,
+              quantized.candidateAssignments,
+              result.cellFeatures ?? [],
+              request.target.width,
+              request.target.height,
+              result.edges,
+              request.palette,
+              request.strategy,
+            )
+          : { cells: cleaned.cells, ditheredCells: 0 }
+      const measured = measurePatternError(
+        dithered.cells,
+        sampledImage,
+        request.palette,
+      )
+      const capacity = assessDetailCapacity(
+        result.edges,
+        quantized.lowConfidenceCells,
+        request.target.width,
+        request.target.height,
+      )
+      const cells = Uint16Array.from(dithered.cells)
       const selectedColorIndexes = [
         ...new Set(
-          cleaned.cells.filter((cell) => cell > 0).map((cell) => cell - 1),
+          dithered.cells.filter((cell) => cell > 0).map((cell) => cell - 1),
         ),
       ].sort((first, second) => first - second)
 
@@ -255,11 +378,19 @@ self.addEventListener(
         engine,
         cells: cells.buffer,
         selectedColorIndexes,
-        averageDeltaE: cleaned.averageDeltaE,
-        maximumDeltaE: cleaned.maximumDeltaE,
+        averageDeltaE: measured.averageDeltaE,
+        maximumDeltaE: measured.maximumDeltaE,
         lowConfidenceCells: quantized.lowConfidenceCells,
         pipelineVersion,
         cleanedCells: cleaned.replacedCellCount,
+        structuralChanges: structured.changedCells,
+        ditheredCells: dithered.ditheredCells,
+        alignmentOffsetX: result.alignment.offsetX,
+        alignmentOffsetY: result.alignment.offsetY,
+        detailScore: capacity.score,
+        recommendedWidth: capacity.recommendedWidth,
+        recommendedHeight: capacity.recommendedHeight,
+        shouldRecommendLargerGrid: capacity.shouldRecommendLargerGrid,
       }
       self.postMessage(response, {
         transfer: [response.cells],

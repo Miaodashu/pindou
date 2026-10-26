@@ -66,6 +66,59 @@ describe('cleanupSpatialRegions', () => {
     expect(result.replacedCellCount).toBe(0)
   })
 
+  it('keeps a mode-protected line detail even when its reduced edge is weak', () => {
+    const protectedDetails = new Uint8Array(9)
+    protectedDetails[4] = 1
+    const result = cleanupSpatialRegions(
+      [1, 1, 1, 1, 2, 1, 1, 1, 1],
+      3,
+      3,
+      solidSource('#FFF8F8', 3, 3),
+      palette,
+      new Uint8Array(9),
+      'balanced',
+      protectedDetails,
+    )
+
+    expect(result.cells[4]).toBe(2)
+    expect(result.replacedCellCount).toBe(0)
+  })
+
+  it('removes an isolated low-edge background speckle in clean photo mode', () => {
+    const result = cleanupSpatialRegions(
+      [1, 1, 1, 1, 2, 1, 1, 1, 1],
+      3,
+      3,
+      solidSource('#FFF8F8', 3, 3),
+      palette,
+      new Uint8Array(9),
+      'closest',
+      undefined,
+      true,
+    )
+
+    expect(result.cells).toEqual(new Array(9).fill(1))
+  })
+
+  it('does not remove a protected photo detail during speckle reduction', () => {
+    const protectedDetails = new Uint8Array(9)
+    protectedDetails[4] = 1
+    const result = cleanupSpatialRegions(
+      [1, 1, 1, 1, 2, 1, 1, 1, 1],
+      3,
+      3,
+      solidSource('#FFF8F8', 3, 3),
+      palette,
+      new Uint8Array(9),
+      'closest',
+      protectedDetails,
+      true,
+    )
+
+    expect(result.cells[4]).toBe(2)
+    expect(result.replacedCellCount).toBe(0)
+  })
+
   it('does not fill transparent cells during cleanup', () => {
     const result = cleanupSpatialRegions(
       [1, 1, 1, 1, 0, 1, 1, 1, 1],

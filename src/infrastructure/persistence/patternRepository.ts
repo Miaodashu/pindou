@@ -111,6 +111,15 @@ export async function getLatestPattern(): Promise<PatternDocument | undefined> {
   return safeParsePatternDocument(cursor.value)
 }
 
+export async function getPattern(
+  patternId: string,
+): Promise<PatternDocument | undefined> {
+  const database = await getDatabase()
+  const value = await database.get('patterns', patternId)
+  if (!value) return undefined
+  return safeParsePatternDocument(value)
+}
+
 export async function savePalette(palette: BeadPalette): Promise<void> {
   const parsed = parsePaletteDocument(palette)
   const database = await getDatabase()

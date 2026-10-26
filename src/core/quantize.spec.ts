@@ -69,7 +69,32 @@ describe('quantizeToPalette', () => {
       averageDeltaE: 0,
       maximumDeltaE: 0,
       lowConfidenceCells: 0,
+      candidateAssignments: [[]],
     })
+  })
+
+  it('keeps several palette candidates for structure-aware optimization', () => {
+    const image = makeImageData([120, 120, 120, 255], 1, 1)
+    const result = quantizeToPalette(image, palette, {
+      maxColors: 3,
+      strategy: 'closest',
+      cellFeatures: [
+        {
+          coverage: 1,
+          variance: 0.03,
+          edgeStrength: 120,
+          candidates: [
+            { red: 250, green: 250, blue: 250, weight: 0.55 },
+            { red: 4, green: 4, blue: 4, weight: 0.45 },
+          ],
+        },
+      ],
+    })
+
+    expect(result.candidateAssignments[0]).toHaveLength(3)
+    expect(
+      result.candidateAssignments[0]?.map((item) => item.colorIndex),
+    ).toEqual(expect.arrayContaining([0, 1]))
   })
 
   it('uses the full palette for closest-color matching', () => {

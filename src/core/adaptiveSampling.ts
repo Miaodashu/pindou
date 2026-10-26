@@ -1,11 +1,34 @@
+import type { ImageContentMode } from '@/core/imageContentMode'
+
 export interface AdaptiveSamplingOptions {
-  sampleSize?: 5 | 7
+  sampleSize?: 5 | 7 | 11
   alphaCoverageThreshold?: number
+  offsetX?: number
+  offsetY?: number
+  collectCellFeatures?: boolean
+  contentMode?: ImageContentMode
+}
+
+export interface SampledColorCandidate {
+  red: number
+  green: number
+  blue: number
+  weight: number
+}
+
+export interface SampledCellFeature {
+  coverage: number
+  variance: number
+  edgeStrength: number
+  lineStrength: number
+  protectedDetail: boolean
+  candidates: SampledColorCandidate[]
 }
 
 export interface AdaptiveSamplingResult {
   imageData: ImageData
   edgeMask: Uint8Array
+  cellFeatures: SampledCellFeature[]
 }
 
 export function selectAdaptiveSampleSize(
@@ -13,7 +36,9 @@ export function selectAdaptiveSampleSize(
   sourceHeight: number,
   targetWidth: number,
   targetHeight: number,
-): 5 | 7 {
+  contentMode: ImageContentMode = 'photo',
+): 5 | 7 | 11 {
+  if (contentMode === 'illustration') return 11
   const sourcePixelsPerCell = Math.min(
     sourceWidth / Math.max(1, targetWidth),
     sourceHeight / Math.max(1, targetHeight),
@@ -26,6 +51,7 @@ interface ColorBucket {
   linearRed: number
   linearGreen: number
   linearBlue: number
+  edgeWeight: number
 }
 
 const srgbToLinear = (value: number) => {
@@ -164,6 +190,32 @@ export function computeSourceEdgeMask(imageData: ImageData): Uint8Array {
   return edges
 }
 
+export function selectAdaptiveEdgeThresholds(edgeMask: Uint8Array) {
+  const histogram = new Uint32Array(256)
+  let count = 0
+  edgeMask.forEach((value) => {
+    if (value < 4) return
+    histogram[value] = (histogram[value] ?? 0) + 1
+    count += 1
+  })
+  if (count === 0) return { low: 48, high: 112 }
+
+  const percentile = (ratio: number) => {
+    const target = count * ratio
+    let total = 0
+    for (let value = 0; value < histogram.length; value += 1) {
+      total += histogram[value] ?? 0
+      if (total >= target) return value
+    }
+    return 255
+  }
+  const high = Math.max(72, Math.min(180, percentile(0.82)))
+  return {
+    low: Math.max(28, Math.round(high * 0.46)),
+    high,
+  }
+}
+
 /**
  * Samples the source area represented by every bead cell. Smooth areas use a
  * linear-RGB average; high-variance and contour cells use a real, dominant
@@ -185,8 +237,22 @@ export function sampleImageToGrid(
 
   const sampleSize = options.sampleSize ?? 7
   const alphaCoverageThreshold = options.alphaCoverageThreshold ?? 0.32
+  const offsetX = Math.max(-0.5, Math.min(0.5, options.offsetX ?? 0))
+  const offsetY = Math.max(-0.5, Math.min(0.5, options.offsetY ?? 0))
+  const collectCellFeatures = options.collectCellFeatures ?? true
+  const contentMode = options.contentMode ?? 'photo'
   const output = new Uint8ClampedArray(targetWidth * targetHeight * 4)
   const targetEdges = new Uint8Array(targetWidth * targetHeight)
+  const cellFeatures: SampledCellFeature[] = collectCellFeatures
+    ? Array.from({ length: targetWidth * targetHeight }, () => ({
+        coverage: 0,
+        variance: 0,
+        edgeStrength: 0,
+        lineStrength: 0,
+        protectedDetail: false,
+        candidates: [],
+      }))
+    : []
   const edgeProbeRadius = Math.max(
     1,
     Math.floor(
@@ -207,20 +273,31 @@ export function sampleImageToGrid(
       let squaredLuminance = 0
       let edgeTotal = 0
       let maximumEdge = 0
+      let totalEdgeWeight = 0
       let centerKey = -1
 
       for (let sampleY = 0; sampleY < sampleSize; sampleY += 1) {
         for (let sampleX = 0; sampleX < sampleSize; sampleX += 1) {
           const normalizedX = (sampleX + 0.5) / sampleSize
           const normalizedY = (sampleY + 0.5) / sampleSize
-          const sourceX = Math.min(
-            source.width - 1,
-            Math.floor(((targetX + normalizedX) / targetWidth) * source.width),
+          const sourceX = Math.max(
+            0,
+            Math.min(
+              source.width - 1,
+              Math.floor(
+                ((targetX + normalizedX + offsetX) / targetWidth) *
+                  source.width,
+              ),
+            ),
           )
-          const sourceY = Math.min(
-            source.height - 1,
-            Math.floor(
-              ((targetY + normalizedY) / targetHeight) * source.height,
+          const sourceY = Math.max(
+            0,
+            Math.min(
+              source.height - 1,
+              Math.floor(
+                ((targetY + normalizedY + offsetY) / targetHeight) *
+                  source.height,
+              ),
             ),
           )
           const sourceIndex = sourceY * source.width + sourceX
@@ -267,11 +344,13 @@ export function sampleImageToGrid(
             linearRed: 0,
             linearGreen: 0,
             linearBlue: 0,
+            edgeWeight: 0,
           }
           bucket.weight += weight
           bucket.linearRed += lr * weight
           bucket.linearGreen += lg * weight
           bucket.linearBlue += lb * weight
+          bucket.edgeWeight += weight * (edge / 255)
           buckets.set(key, bucket)
 
           opaqueWeight += weight
@@ -281,6 +360,7 @@ export function sampleImageToGrid(
           squaredLuminance += light * light * weight
           edgeTotal += edge * spatialWeight
           maximumEdge = Math.max(maximumEdge, edge)
+          totalEdgeWeight += weight * (edge / 255)
           if (
             sampleX === Math.floor(sampleSize / 2) &&
             sampleY === Math.floor(sampleSize / 2)
@@ -305,32 +385,110 @@ export function sampleImageToGrid(
         squaredLuminance / opaqueWeight - averageLuminance * averageLuminance,
       )
       const averageEdge = edgeTotal / Math.max(1, totalSampleWeight)
-      const useDominantColor = variance > 0.006 || maximumEdge > 58
+      const useDominantColor =
+        contentMode === 'pixel-art' || variance > 0.006 || maximumEdge > 58
+
+      let winner: ColorBucket | undefined
+      let candidates: SampledColorCandidate[] = []
+      let lineStrength = 0
+      let protectedDetail = false
+      if (useDominantColor) {
+        if (collectCellFeatures) {
+          const rankedBuckets = [...buckets.entries()]
+            .map(([key, bucket]) => {
+              const centerShare =
+                key === centerKey ? bucket.weight / opaqueWeight : 0
+              const centerBoost =
+                maximumEdge > 72 && centerShare >= 0.035 ? 1.1 : 0
+              const bucketLuminance = luminance(
+                bucket.linearRed / bucket.weight,
+                bucket.linearGreen / bucket.weight,
+                bucket.linearBlue / bucket.weight,
+              )
+              const share = bucket.weight / opaqueWeight
+              const darknessContrast = Math.max(
+                0,
+                averageLuminance - bucketLuminance,
+              )
+              const edgeShare =
+                totalEdgeWeight <= 0 ? 0 : bucket.edgeWeight / totalEdgeWeight
+              const strokeCandidate =
+                contentMode === 'illustration' &&
+                maximumEdge >= 42 &&
+                share >= 0.008 &&
+                darknessContrast >= 0.035 &&
+                edgeShare >= 0.08
+              const strokeBoost = strokeCandidate
+                ? opaqueWeight *
+                  Math.min(3.5, darknessContrast * 3.6 + edgeShare * 0.75)
+                : 0
+              return {
+                bucket,
+                share,
+                strokeCandidate,
+                strokeStrength: strokeCandidate
+                  ? Math.min(1, darknessContrast * 1.8 + edgeShare * 0.55)
+                  : 0,
+                score: bucket.weight + opaqueWeight * centerBoost + strokeBoost,
+              }
+            })
+            .sort((first, second) => second.score - first.score)
+          winner = rankedBuckets[0]?.bucket
+          const winningBucket = rankedBuckets[0]
+          lineStrength = winningBucket?.strokeStrength ?? 0
+          protectedDetail = Boolean(
+            winningBucket?.strokeCandidate &&
+            winningBucket.share <= 0.46 &&
+            lineStrength >= 0.16,
+          )
+          candidates = rankedBuckets.slice(0, 4).map(({ bucket, score }) => ({
+            red: linearToSrgb(bucket.linearRed / bucket.weight),
+            green: linearToSrgb(bucket.linearGreen / bucket.weight),
+            blue: linearToSrgb(bucket.linearBlue / bucket.weight),
+            weight: score,
+          }))
+        } else {
+          let winnerScore = Number.NEGATIVE_INFINITY
+          for (const [key, bucket] of buckets) {
+            const centerShare =
+              key === centerKey ? bucket.weight / opaqueWeight : 0
+            const centerBoost =
+              maximumEdge > 72 && centerShare >= 0.035 ? 1.1 : 0
+            const score = bucket.weight + opaqueWeight * centerBoost
+            if (score > winnerScore) {
+              winner = bucket
+              winnerScore = score
+            }
+          }
+        }
+      } else if (collectCellFeatures) {
+        candidates = [
+          {
+            red: linearToSrgb(averageRed),
+            green: linearToSrgb(averageGreen),
+            blue: linearToSrgb(averageBlue),
+            weight: 1,
+          },
+        ]
+      }
+      if (collectCellFeatures) {
+        const candidateWeight = candidates.reduce(
+          (total, candidate) => total + candidate.weight,
+          0,
+        )
+        candidates.forEach((candidate) => {
+          candidate.weight =
+            candidateWeight === 0 ? 0 : candidate.weight / candidateWeight
+        })
+      }
 
       let resultRed = averageRed
       let resultGreen = averageGreen
       let resultBlue = averageBlue
-      if (useDominantColor && buckets.size > 0) {
-        let winner: ColorBucket | undefined
-        let winnerWeight = -1
-        const centerBucket = buckets.get(centerKey)
-        const centerShare = (centerBucket?.weight ?? 0) / opaqueWeight
-        const protectCenterDetail = maximumEdge > 72 && centerShare >= 0.035
-
-        for (const [key, bucket] of buckets) {
-          const score =
-            bucket.weight +
-            (protectCenterDetail && key === centerKey ? opaqueWeight * 1.1 : 0)
-          if (score > winnerWeight) {
-            winnerWeight = score
-            winner = bucket
-          }
-        }
-        if (winner) {
-          resultRed = winner.linearRed / winner.weight
-          resultGreen = winner.linearGreen / winner.weight
-          resultBlue = winner.linearBlue / winner.weight
-        }
+      if (useDominantColor && winner) {
+        resultRed = winner.linearRed / winner.weight
+        resultGreen = winner.linearGreen / winner.weight
+        resultBlue = winner.linearBlue / winner.weight
       }
 
       output[outputOffset] = linearToSrgb(resultRed)
@@ -341,11 +499,22 @@ export function sampleImageToGrid(
         255,
         Math.round(maximumEdge * 0.65 + averageEdge * 0.35),
       )
+      if (collectCellFeatures) {
+        cellFeatures[targetIndex] = {
+          coverage,
+          variance,
+          edgeStrength: targetEdges[targetIndex] ?? 0,
+          lineStrength,
+          protectedDetail,
+          candidates,
+        }
+      }
     }
   }
 
   return {
     imageData: new ImageData(output, targetWidth, targetHeight),
     edgeMask: targetEdges,
+    cellFeatures,
   }
 }

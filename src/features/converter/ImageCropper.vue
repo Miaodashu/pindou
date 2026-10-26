@@ -12,6 +12,7 @@ const props = defineProps<{
 const host = ref<HTMLDivElement>()
 const image = ref<HTMLImageElement>()
 let cropper: Cropper | undefined
+const ratioTolerance = 0.000001
 
 function selection() {
   return cropper?.getCropperSelection() ?? undefined
@@ -35,6 +36,56 @@ function fitSelection(target: CropperSelection) {
   target.aspectRatio = ratio
   target.initialAspectRatio = ratio
   target.$change(0, 0, width, height, ratio, true).$center()
+}
+
+function targetAspectRatio() {
+  const ratio = props.targetWidth / props.targetHeight
+  return Number.isFinite(ratio) && ratio > 0 ? ratio : 1
+}
+
+function updateSelectionConstraint(target: CropperSelection) {
+  const ratio = props.freeAspectRatio ? Number.NaN : targetAspectRatio()
+  const currentRatio = target.width / target.height
+
+  target.aspectRatio = ratio
+  target.initialAspectRatio = ratio
+
+  if (props.freeAspectRatio) return
+  if (
+    Number.isFinite(currentRatio) &&
+    Math.abs(currentRatio - ratio) <= ratioTolerance
+  ) {
+    return
+  }
+
+  const canvas = cropper?.getCropperCanvas()
+  if (!canvas || target.width <= 0 || target.height <= 0) {
+    fitSelection(target)
+    return
+  }
+
+  const centerX = target.x + target.width / 2
+  const centerY = target.y + target.height / 2
+  const area = target.width * target.height
+  let width = Math.sqrt(area * ratio)
+  let height = width / ratio
+  const scale = Math.min(
+    1,
+    canvas.clientWidth / width,
+    canvas.clientHeight / height,
+  )
+  width *= scale
+  height *= scale
+
+  const x = Math.min(
+    Math.max(0, centerX - width / 2),
+    Math.max(0, canvas.clientWidth - width),
+  )
+  const y = Math.min(
+    Math.max(0, centerY - height / 2),
+    Math.max(0, canvas.clientHeight - height),
+  )
+  target.$change(x, y, width, height, ratio, true)
 }
 
 async function initialize() {
@@ -68,10 +119,10 @@ async function getImageData() {
 }
 
 watch(
-  () => [props.targetWidth, props.targetHeight, props.freeAspectRatio],
+  () => (props.freeAspectRatio ? 'free' : targetAspectRatio().toPrecision(12)),
   () => {
     const target = selection()
-    if (target) fitSelection(target)
+    if (target) updateSelectionConstraint(target)
   },
 )
 

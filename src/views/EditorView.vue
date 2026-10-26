@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import {
   ArrowLeftRight,
+  Eye,
+  EyeOff,
   Eraser,
   Hand,
   Minus,
+  Minimize2,
   PaintBucket,
   Palette,
   Pencil,
   Pipette,
   Plus,
   Redo2,
+  RotateCcw,
   Scan,
   Trash2,
   Undo2,
@@ -21,6 +25,8 @@ import { storeToRefs } from 'pinia'
 import { RouterLink } from 'vue-router'
 
 import type { SelectionMode } from '@/core/selection'
+import { downscalePattern } from '@/core/downscalePattern'
+import type { PatternDocument } from '@/domain/pattern/types'
 import ImageImportPanel from '@/features/converter/ImageImportPanel.vue'
 import ColorReplaceDialog from '@/features/editor/ColorReplaceDialog.vue'
 import PatternCanvas from '@/features/editor/PatternCanvas.vue'
@@ -74,7 +80,47 @@ const newWidth = ref(29)
 const newHeight = ref(29)
 const replaceFrom = ref<number>()
 const toast = ref('')
+const hiddenColorIndexes = ref<number[]>([])
+const downscaleWidth = ref(20)
+const downscaleHeight = ref(20)
+const largePatternBackup = ref<PatternDocument>()
+const downscaling = ref(false)
 let temporaryTool: EditorTool | undefined
+
+const DERIVED_PATTERN_LINK_KEY = 'pindou-derived-pattern-link-v1'
+
+interface DerivedPatternLink {
+  derivedPatternId: string
+  sourcePatternId: string
+}
+
+function readDerivedPatternLink(): DerivedPatternLink | undefined {
+  try {
+    const value = JSON.parse(
+      window.localStorage.getItem(DERIVED_PATTERN_LINK_KEY) ?? 'null',
+    ) as Partial<DerivedPatternLink> | null
+    if (
+      typeof value?.derivedPatternId !== 'string' ||
+      typeof value.sourcePatternId !== 'string'
+    ) {
+      return undefined
+    }
+    return {
+      derivedPatternId: value.derivedPatternId,
+      sourcePatternId: value.sourcePatternId,
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function saveDerivedPatternLink(link: DerivedPatternLink) {
+  window.localStorage.setItem(DERIVED_PATTERN_LINK_KEY, JSON.stringify(link))
+}
+
+function clearDerivedPatternLink() {
+  window.localStorage.removeItem(DERIVED_PATTERN_LINK_KEY)
+}
 
 const persistenceLabel = computed(() => {
   const labels = {
@@ -250,8 +296,114 @@ function selectTool(nextTool: EditorTool) {
 
 function selectPaletteColor(colorIndex: number) {
   selectedColor.value = colorIndex
+  hiddenColorIndexes.value = hiddenColorIndexes.value.filter(
+    (index) => index !== colorIndex,
+  )
   tool.value = 'pencil'
   paletteOpen.value = false
+}
+
+function toggleColorVisibility(colorIndex: number) {
+  hiddenColorIndexes.value = hiddenColorIndexes.value.includes(colorIndex)
+    ? hiddenColorIndexes.value.filter((index) => index !== colorIndex)
+    : [...hiddenColorIndexes.value, colorIndex]
+}
+
+function isolateColor(colorIndex: number) {
+  hiddenColorIndexes.value = colorUsage.value
+    .map((entry) => entry.colorIndex)
+    .filter((index) => index !== colorIndex)
+}
+
+function restoreAllColors() {
+  hiddenColorIndexes.value = []
+}
+
+function fitDownscaleRatio() {
+  const width = Math.max(
+    1,
+    Math.min(pattern.value.width, Math.round(downscaleWidth.value)),
+  )
+  downscaleWidth.value = width
+  downscaleHeight.value = Math.max(
+    1,
+    Math.round((width / pattern.value.width) * pattern.value.height),
+  )
+}
+
+async function createSmallerPattern() {
+  if (downscaling.value) return
+  const width = Math.max(
+    1,
+    Math.min(pattern.value.width, Math.round(downscaleWidth.value)),
+  )
+  const height = Math.max(
+    1,
+    Math.min(pattern.value.height, Math.round(downscaleHeight.value)),
+  )
+  if (width === pattern.value.width && height === pattern.value.height) {
+    notify('请输入小于当前图纸的目标尺寸')
+    return
+  }
+  if (
+    !window.confirm(
+      `将当前 ${pattern.value.width} × ${pattern.value.height} 精修图生成 ${width} × ${height} 小尺寸副本。大图原稿会保留，是否继续？`,
+    )
+  ) {
+    return
+  }
+  downscaling.value = true
+  try {
+    const cells = downscalePattern(
+      pattern.value.cells,
+      pattern.value.width,
+      pattern.value.height,
+      width,
+      height,
+      { preserveDetails: true },
+    )
+    const sourceSnapshot = await store.createDerivedPattern(
+      width,
+      height,
+      cells,
+      `${pattern.value.title} · 小尺寸 ${width}×${height}`,
+    )
+    largePatternBackup.value = sourceSnapshot
+    saveDerivedPatternLink({
+      derivedPatternId: pattern.value.id,
+      sourcePatternId: sourceSnapshot.id,
+    })
+    hiddenColorIndexes.value = []
+    selection.value = []
+    zoom.value = 1
+    notify(`已生成 ${width} × ${height} 小尺寸副本，大图原稿已保留`)
+  } catch (error) {
+    console.error('Failed to create a smaller pattern', error)
+    notify('生成小尺寸副本失败，请稍后重试')
+  } finally {
+    downscaling.value = false
+  }
+}
+
+async function restoreLargePattern() {
+  if (downscaling.value) return
+  const backup = largePatternBackup.value
+  if (!backup) return
+  if (!window.confirm('恢复大图原稿会离开当前小尺寸副本，是否继续？')) return
+  downscaling.value = true
+  try {
+    await store.restorePatternSnapshot(backup)
+    largePatternBackup.value = undefined
+    clearDerivedPatternLink()
+    hiddenColorIndexes.value = []
+    selection.value = []
+    notify(`已恢复 ${backup.width} × ${backup.height} 大图原稿`)
+  } catch (error) {
+    console.error('Failed to restore the large pattern', error)
+    notify('恢复大图原稿失败，请稍后重试')
+  } finally {
+    downscaling.value = false
+  }
 }
 
 function pickColor(colorIndex: number) {
@@ -396,6 +548,22 @@ function handleKeyup(event: KeyboardEvent) {
 }
 
 watch(() => [pattern.value.width, pattern.value.height], clearSelection)
+watch(
+  () => pattern.value.id,
+  async (patternId) => {
+    hiddenColorIndexes.value = []
+    downscaleWidth.value = Math.max(1, Math.round(pattern.value.width * 0.7))
+    downscaleHeight.value = Math.max(1, Math.round(pattern.value.height * 0.7))
+    largePatternBackup.value = undefined
+    const link = readDerivedPatternLink()
+    if (link?.derivedPatternId !== patternId) return
+    const snapshot = await store.getPatternSnapshot(link.sourcePatternId)
+    if (pattern.value.id !== patternId) return
+    if (snapshot) largePatternBackup.value = snapshot
+    else clearDerivedPatternLink()
+  },
+  { immediate: true },
+)
 watch(editorOpen, (open) => {
   document.body.style.overflow = open ? 'hidden' : ''
 })
@@ -667,6 +835,7 @@ onBeforeUnmount(() => {
                 :show-guides="showGuides"
                 :selection="selection"
                 :selection-mode="selectionMode"
+                :hidden-color-indexes="hiddenColorIndexes"
                 :tracing-image-url="tracingImageUrl"
                 :tracing-visible="tracingVisible"
                 :tracing-opacity="tracingOpacity"
@@ -689,13 +858,25 @@ onBeforeUnmount(() => {
                     {{ filledCellCount }} 颗 · {{ colorUsage.length }} 种颜色
                   </h2>
                 </div>
-                <RouterLink to="/inventory">豆仓</RouterLink>
+                <div class="usage-heading-actions">
+                  <button
+                    v-if="hiddenColorIndexes.length"
+                    type="button"
+                    @click="restoreAllColors"
+                  >
+                    <Eye :size="14" aria-hidden="true" />显示全部
+                  </button>
+                  <RouterLink to="/inventory">豆仓</RouterLink>
+                </div>
               </div>
               <div class="usage-list">
                 <div
                   v-for="entry in editorUsage"
                   :key="entry.colorIndex"
                   class="usage-row"
+                  :class="{
+                    hidden: hiddenColorIndexes.includes(entry.colorIndex),
+                  }"
                 >
                   <button
                     type="button"
@@ -721,6 +902,39 @@ onBeforeUnmount(() => {
                     <b>{{ entry.count }}</b>
                   </button>
                   <button
+                    v-if="entry.colorIndex > 0"
+                    type="button"
+                    class="visibility-button"
+                    :aria-label="
+                      hiddenColorIndexes.includes(entry.colorIndex)
+                        ? `显示 ${entry.color?.code}`
+                        : `隐藏 ${entry.color?.code}`
+                    "
+                    :title="
+                      hiddenColorIndexes.includes(entry.colorIndex)
+                        ? '显示当前颜色'
+                        : '隐藏当前颜色'
+                    "
+                    @click="toggleColorVisibility(entry.colorIndex)"
+                  >
+                    <Eye
+                      v-if="hiddenColorIndexes.includes(entry.colorIndex)"
+                      :size="15"
+                      aria-hidden="true"
+                    />
+                    <EyeOff v-else :size="15" aria-hidden="true" />
+                  </button>
+                  <button
+                    v-if="entry.colorIndex > 0"
+                    type="button"
+                    class="visibility-button"
+                    :aria-label="`只显示 ${entry.color?.code}`"
+                    title="隐藏其他颜色，只看当前色号"
+                    @click="isolateColor(entry.colorIndex)"
+                  >
+                    <Eye :size="15" aria-hidden="true" />
+                  </button>
+                  <button
                     type="button"
                     class="replace-button"
                     :aria-label="`替换 ${entry.color?.code ?? '透明背景'}`"
@@ -731,6 +945,58 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </section>
+
+            <details class="side-section downscale-section">
+              <summary>大图转小图</summary>
+              <div class="downscale-panel">
+                <p>
+                  建议先在大尺寸图纸中完成轮廓和色号精修，再生成小尺寸副本。系统会按区域占比采样，并增强边界细节；大图原稿不会被删除。
+                </p>
+                <div class="downscale-fields">
+                  <input
+                    v-model.number="downscaleWidth"
+                    type="number"
+                    min="1"
+                    :max="pattern.width"
+                    aria-label="小尺寸图纸宽度"
+                  />
+                  <span>×</span>
+                  <input
+                    v-model.number="downscaleHeight"
+                    type="number"
+                    min="1"
+                    :max="pattern.height"
+                    aria-label="小尺寸图纸高度"
+                  />
+                  <button
+                    type="button"
+                    title="按当前图纸比例计算高度"
+                    @click="fitDownscaleRatio"
+                  >
+                    等比
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  class="create-small-pattern"
+                  :disabled="downscaling"
+                  @click="createSmallerPattern"
+                >
+                  <Minimize2 :size="15" aria-hidden="true" />{{
+                    downscaling ? '处理中…' : '生成小尺寸副本'
+                  }}
+                </button>
+                <button
+                  v-if="largePatternBackup"
+                  type="button"
+                  class="restore-large-pattern"
+                  :disabled="downscaling"
+                  @click="restoreLargePattern"
+                >
+                  <RotateCcw :size="15" aria-hidden="true" />恢复大图原稿
+                </button>
+              </div>
+            </details>
 
             <details class="side-section" open>
               <summary>临摹垫图</summary>
@@ -1097,6 +1363,26 @@ kbd {
   font-weight: 800;
 }
 
+.usage-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.usage-heading-actions button {
+  display: inline-flex;
+  padding: 5px 7px;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: white;
+  cursor: pointer;
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+
 .usage-list {
   display: grid;
   gap: 7px;
@@ -1106,16 +1392,25 @@ kbd {
 
 .usage-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  grid-template-columns: minmax(0, 1fr) repeat(3, 34px);
   gap: 5px;
 }
 
+.usage-row.hidden .usage-main {
+  opacity: 0.48;
+}
+
 .usage-main,
-.replace-button {
+.replace-button,
+.visibility-button {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: white;
   cursor: pointer;
+}
+
+.replace-button {
+  grid-column: 4;
 }
 
 .usage-main {
@@ -1153,10 +1448,73 @@ kbd {
     10px 10px;
 }
 
-.replace-button {
+.replace-button,
+.visibility-button {
   display: grid;
   place-items: center;
   color: var(--text-muted);
+}
+
+.visibility-button:hover,
+.visibility-button:focus-visible {
+  color: var(--rose-strong);
+  background: var(--rose-pale);
+}
+
+.downscale-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.downscale-panel p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  line-height: 1.55;
+}
+
+.downscale-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.downscale-fields input {
+  min-width: 0;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.downscale-fields button,
+.create-small-pattern,
+.restore-large-pattern {
+  display: inline-flex;
+  min-height: 34px;
+  padding: 7px 9px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: white;
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.create-small-pattern {
+  border-color: rgb(212 175 55 / 52%);
+  color: #60490c;
+  background: #fff7d7;
+}
+
+.restore-large-pattern {
+  color: var(--rose-strong);
+  background: var(--rose-pale);
 }
 
 details summary {

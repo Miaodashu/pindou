@@ -1,5 +1,6 @@
 import type { BeadPalette } from '@/domain/palette/types'
 import type { QuantizeStrategy } from '@/core/quantize'
+import type { ImageContentMode } from '@/core/imageContentMode'
 import type {
   BackgroundMode,
   ConversionPipelineVersion,
@@ -16,6 +17,16 @@ interface PendingRequest {
 
 let worker: Worker | undefined
 const pending = new Map<string, PendingRequest>()
+
+function resetWorker(error: Error) {
+  pending.forEach((request) => {
+    window.clearTimeout(request.timeout)
+    request.reject(error)
+  })
+  pending.clear()
+  worker?.terminate()
+  worker = undefined
+}
 
 function getWorker() {
   if (worker) return worker
@@ -38,14 +49,7 @@ function getWorker() {
     },
   )
   worker.addEventListener('error', (event) => {
-    const error = new Error(event.message || '图片处理线程异常终止。')
-    pending.forEach((request) => {
-      window.clearTimeout(request.timeout)
-      request.reject(error)
-    })
-    pending.clear()
-    worker?.terminate()
-    worker = undefined
+    resetWorker(new Error(event.message || '图片处理线程异常终止。'))
   })
   return worker
 }
@@ -59,6 +63,7 @@ export function convertImageInWorker(
     maxColors: number
     strategy: QuantizeStrategy
     backgroundMode: BackgroundMode
+    contentMode: ImageContentMode
     pipelineVersion?: ConversionPipelineVersion
   },
 ): Promise<ConvertImageSuccess> {
@@ -76,13 +81,13 @@ export function convertImageInWorker(
     maxColors: options.maxColors,
     strategy: options.strategy,
     backgroundMode: options.backgroundMode,
-    pipelineVersion: options.pipelineVersion ?? 'v2-adaptive',
+    contentMode: options.contentMode,
+    pipelineVersion: options.pipelineVersion ?? 'v4-line-aware',
   }
 
   return new Promise((resolve, reject) => {
     const timeout = window.setTimeout(() => {
-      pending.delete(id)
-      reject(new Error('图片处理超过 30 秒，请减小原图尺寸后重试。'))
+      resetWorker(new Error('图片处理超过 30 秒，请减小原图尺寸后重试。'))
     }, 30_000)
     pending.set(id, { resolve, reject, timeout })
     getWorker().postMessage(request, [request.source.data])

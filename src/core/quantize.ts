@@ -3,6 +3,8 @@ import {
   conversionStrategyPresets,
   type ConversionStrategy,
 } from '@/core/conversionStrategy'
+import type { SampledCellFeature } from '@/core/adaptiveSampling'
+import type { ImageContentMode } from '@/core/imageContentMode'
 import type { BeadPalette, LabColor } from '@/domain/palette/types'
 
 export interface QuantizeOptions {
@@ -12,6 +14,8 @@ export interface QuantizeOptions {
   edgeMask?: Uint8Array
   edgeWeight?: number
   refinePalette?: boolean
+  cellFeatures?: readonly SampledCellFeature[]
+  contentMode?: ImageContentMode
 }
 
 export type QuantizeStrategy = ConversionStrategy
@@ -22,6 +26,12 @@ export interface QuantizeResult {
   averageDeltaE: number
   maximumDeltaE: number
   lowConfidenceCells: number
+  candidateAssignments: PaletteCandidate[][]
+}
+
+export interface PaletteCandidate {
+  colorIndex: number
+  cost: number
 }
 
 interface Sample {
@@ -38,6 +48,26 @@ interface SampleAccumulator {
   weight: number
 }
 
+function insertTopCandidate(
+  ranked: PaletteCandidate[],
+  candidate: PaletteCandidate,
+  limit: number,
+) {
+  let position = 0
+  while (
+    position < ranked.length &&
+    ((ranked[position]?.cost ?? Number.POSITIVE_INFINITY) < candidate.cost ||
+      ((ranked[position]?.cost ?? Number.POSITIVE_INFINITY) ===
+        candidate.cost &&
+        (ranked[position]?.colorIndex ?? Number.POSITIVE_INFINITY) <
+          candidate.colorIndex))
+  ) {
+    position += 1
+  }
+  ranked.splice(position, 0, candidate)
+  if (ranked.length > limit) ranked.pop()
+}
+
 export function quantizeToPalette(
   imageData: ImageData,
   palette: BeadPalette,
@@ -47,6 +77,31 @@ export function quantizeToPalette(
   const edgeWeight = options.edgeWeight ?? 2.5
   const samplesByColor = new Map<number, SampleAccumulator>()
   const pixelKeys = new Int32Array(imageData.width * imageData.height).fill(-1)
+
+  const addSample = (
+    red: number,
+    green: number,
+    blue: number,
+    weight: number,
+  ) => {
+    const key = ((red >> 4) << 8) | ((green >> 4) << 4) | (blue >> 4)
+    const existing = samplesByColor.get(key)
+    if (existing) {
+      existing.weight += weight
+      existing.redTotal += red * weight
+      existing.greenTotal += green * weight
+      existing.blueTotal += blue * weight
+    } else {
+      samplesByColor.set(key, {
+        key,
+        redTotal: red * weight,
+        greenTotal: green * weight,
+        blueTotal: blue * weight,
+        weight,
+      })
+    }
+    return key
+  }
 
   for (let pixel = 0; pixel < pixelKeys.length; pixel += 1) {
     const offset = pixel * 4
@@ -61,22 +116,25 @@ export function quantizeToPalette(
     // weighted average of the original colors inside every bucket.
     const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)
     pixelKeys[pixel] = key
-    const importance = 1 + ((options.edgeMask?.[pixel] ?? 0) / 255) * edgeWeight
-    const existing = samplesByColor.get(key)
-
-    if (existing) {
-      existing.weight += importance
-      existing.redTotal += r * importance
-      existing.greenTotal += g * importance
-      existing.blueTotal += b * importance
-    } else {
-      samplesByColor.set(key, {
-        key,
-        redTotal: r * importance,
-        greenTotal: g * importance,
-        blueTotal: b * importance,
-        weight: importance,
+    const feature = options.cellFeatures?.[pixel]
+    const detailBoost =
+      options.contentMode === 'illustration' && feature?.protectedDetail
+        ? 2.4
+        : 1
+    const importance =
+      (1 + ((options.edgeMask?.[pixel] ?? 0) / 255) * edgeWeight) * detailBoost
+    const featureCandidates = options.cellFeatures?.[pixel]?.candidates ?? []
+    if (featureCandidates.length > 0) {
+      featureCandidates.forEach((candidate) => {
+        addSample(
+          candidate.red,
+          candidate.green,
+          candidate.blue,
+          importance * candidate.weight,
+        )
       })
+    } else {
+      addSample(r, g, b, importance)
     }
   }
 
@@ -101,11 +159,15 @@ export function quantizeToPalette(
       averageDeltaE: 0,
       maximumDeltaE: 0,
       lowConfidenceCells: 0,
+      candidateAssignments: Array.from(pixelKeys, () => []),
     }
   }
 
   const distances = samples.map((sample) =>
     palette.colors.map((color) => deltaE2000(sample.lab, color.lab)),
+  )
+  const sampleIndexByKey = new Map(
+    samples.map((sample, index) => [sample.key, index]),
   )
   const selected: number[] = []
   const strategyPreset =
@@ -237,38 +299,87 @@ export function quantizeToPalette(
     }
   }
 
-  const assignments = new Map<
-    number,
-    { paletteIndex: number; distance: number; gap: number }
-  >()
-  let weightedDistanceTotal = 0
-  let totalWeight = 0
+  let distanceTotal = 0
+  let measuredCells = 0
   let maximumDeltaE = 0
-
-  samples.forEach((sample, sampleIndex) => {
-    const ranked = selected
-      .map((paletteIndex) => ({
-        paletteIndex,
-        distance: distances[sampleIndex]?.[paletteIndex] ?? 0,
-      }))
-      .sort((first, second) => first.distance - second.distance)
-    const nearest = ranked[0]
-    if (!nearest) return
-    const gap =
-      (ranked[1]?.distance ?? nearest.distance + 100) - nearest.distance
-    assignments.set(sample.key, { ...nearest, gap })
-    weightedDistanceTotal += nearest.distance * sample.weight
-    totalWeight += sample.weight
-    maximumDeltaE = Math.max(maximumDeltaE, nearest.distance)
-  })
-
   let lowConfidenceCells = 0
-  const cells = Array.from(pixelKeys, (key) => {
-    if (key < 0) return 0
-    const assignment = assignments.get(key)
-    if (!assignment) return 0
-    if (assignment.gap < 2) lowConfidenceCells += 1
-    return assignment.paletteIndex + 1
+  const candidateAssignments: PaletteCandidate[][] = []
+  const cells = Array.from(pixelKeys, (key, pixel) => {
+    if (key < 0) {
+      candidateAssignments[pixel] = []
+      return 0
+    }
+    const featureCandidates = options.cellFeatures?.[pixel]?.candidates ?? []
+    const ranked: PaletteCandidate[] = []
+    const fallbackSampleIndex = sampleIndexByKey.get(key)
+    const featureSampleIndexes = featureCandidates.map((candidate) => ({
+      candidate,
+      sampleIndex: sampleIndexByKey.get(
+        ((candidate.red >> 4) << 8) |
+          ((candidate.green >> 4) << 4) |
+          (candidate.blue >> 4),
+      ),
+      lab: rgbToLab({
+        r: candidate.red,
+        g: candidate.green,
+        b: candidate.blue,
+      }),
+    }))
+    for (const colorIndex of selected) {
+      let cost =
+        featureCandidates.length === 0
+          ? fallbackSampleIndex === undefined
+            ? Number.POSITIVE_INFINITY
+            : (distances[fallbackSampleIndex]?.[colorIndex] ??
+              Number.POSITIVE_INFINITY)
+          : Number.POSITIVE_INFINITY
+      if (featureCandidates.length > 0) {
+        cost = Number.POSITIVE_INFINITY
+        for (const reference of featureSampleIndexes) {
+          const distance =
+            reference.sampleIndex === undefined
+              ? deltaE2000(reference.lab, palette.colors[colorIndex]!.lab)
+              : (distances[reference.sampleIndex]?.[colorIndex] ??
+                Number.POSITIVE_INFINITY)
+          const candidatePenalty =
+            options.contentMode === 'illustration' &&
+            options.cellFeatures?.[pixel]?.protectedDetail
+              ? 8
+              : 3
+          cost = Math.min(
+            cost,
+            distance + (1 - reference.candidate.weight) * candidatePenalty,
+          )
+        }
+      }
+      const worst = ranked[ranked.length - 1]
+      if (
+        ranked.length < 5 ||
+        cost < (worst?.cost ?? Number.POSITIVE_INFINITY) ||
+        (cost === worst?.cost && colorIndex < worst.colorIndex)
+      ) {
+        insertTopCandidate(ranked, { colorIndex, cost }, 5)
+      }
+    }
+    candidateAssignments[pixel] = ranked
+    const nearest = ranked[0]
+    if (!nearest) return 0
+    const gap = (ranked[1]?.cost ?? nearest.cost + 100) - nearest.cost
+    if (gap < 2) lowConfidenceCells += 1
+
+    const offset = pixel * 4
+    const measuredDistance = deltaE2000(
+      rgbToLab({
+        r: imageData.data[offset] ?? 0,
+        g: imageData.data[offset + 1] ?? 0,
+        b: imageData.data[offset + 2] ?? 0,
+      }),
+      palette.colors[nearest.colorIndex]!.lab,
+    )
+    distanceTotal += measuredDistance
+    measuredCells += 1
+    maximumDeltaE = Math.max(maximumDeltaE, measuredDistance)
+    return nearest.colorIndex + 1
   })
 
   const usedColorIndexes = [
@@ -278,8 +389,9 @@ export function quantizeToPalette(
   return {
     cells,
     selectedColorIndexes: usedColorIndexes,
-    averageDeltaE: totalWeight === 0 ? 0 : weightedDistanceTotal / totalWeight,
+    averageDeltaE: measuredCells === 0 ? 0 : distanceTotal / measuredCells,
     maximumDeltaE,
     lowConfidenceCells,
+    candidateAssignments,
   }
 }

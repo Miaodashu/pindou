@@ -32,6 +32,24 @@ function orthogonalNeighbors(index: number, width: number, height: number) {
   ]
 }
 
+function surroundingNeighbors(index: number, width: number, height: number) {
+  const x = index % width
+  const y = Math.floor(index / width)
+  const result: number[] = []
+  for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+    for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+      if (offsetX === 0 && offsetY === 0) continue
+      const nextX = x + offsetX
+      const nextY = y + offsetY
+      if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) {
+        continue
+      }
+      result.push(nextY * width + nextX)
+    }
+  }
+  return result
+}
+
 function measure(
   cells: readonly number[],
   imageData: ImageData,
@@ -68,6 +86,8 @@ export function cleanupSpatialRegions(
   palette: BeadPalette,
   edgeMask: Uint8Array,
   strategy: ConversionStrategy,
+  protectedDetails?: Uint8Array,
+  reduceSpeckles = false,
 ): SpatialCleanupResult {
   if (
     inputCells.length !== width * height ||
@@ -107,6 +127,7 @@ export function cleanupSpatialRegions(
     }
 
     if (region.length > preset.maximumRegionSize) continue
+    if (region.some((index) => protectedDetails?.[index])) continue
     if (
       region.some(
         (index) => (edgeMask[index] ?? 0) >= preset.protectedEdgeStrength,
@@ -155,6 +176,45 @@ export function cleanupSpatialRegions(
         cells[index] = bestCandidate
       })
       replacedCellCount += region.length
+    }
+  }
+
+  if (reduceSpeckles) {
+    for (let pass = 0; pass < 2; pass += 1) {
+      const next = [...cells]
+      for (let index = 0; index < cells.length; index += 1) {
+        const current = cells[index] ?? 0
+        if (
+          current <= 0 ||
+          protectedDetails?.[index] ||
+          (edgeMask[index] ?? 0) >= 76
+        ) {
+          continue
+        }
+        const counts = new Map<number, number>()
+        surroundingNeighbors(index, width, height).forEach((neighbor) => {
+          const candidate = cells[neighbor] ?? 0
+          if (candidate <= 0 || candidate === current) return
+          counts.set(candidate, (counts.get(candidate) ?? 0) + 1)
+        })
+        const dominant = [...counts.entries()].sort(
+          (first, second) => second[1] - first[1] || first[0] - second[0],
+        )[0]
+        if (!dominant || dominant[1] < 5) continue
+        const currentColor = palette.colors[current - 1]
+        const candidateColor = palette.colors[dominant[0] - 1]
+        if (!currentColor || !candidateColor) continue
+        const sourceLab = sourceLabAt(source, index)
+        const errorIncrease =
+          deltaE2000(sourceLab, candidateColor.lab) -
+          deltaE2000(sourceLab, currentColor.lab)
+        if (errorIncrease > preset.maximumErrorIncrease + 1.5) continue
+        next[index] = dominant[0]
+      }
+      next.forEach((cell, index) => {
+        if (cell !== cells[index]) replacedCellCount += 1
+        cells[index] = cell
+      })
     }
   }
 

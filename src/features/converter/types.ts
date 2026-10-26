@@ -1,8 +1,10 @@
 import type { BeadPalette } from '@/domain/palette/types'
 import type { QuantizeStrategy } from '@/core/quantize'
+import type { ImageContentMode } from '@/core/imageContentMode'
 
 export type BackgroundMode = 'preserve' | 'remove-edge'
-export type ConversionPipelineVersion = 'v1-legacy' | 'v2-adaptive'
+export type ConversionPipelineVersion =
+  'v1-legacy' | 'v2-adaptive' | 'v3-structural' | 'v4-line-aware'
 
 export interface ConvertImageRequest {
   id: string
@@ -20,6 +22,7 @@ export interface ConvertImageRequest {
   maxColors: number
   strategy: QuantizeStrategy
   backgroundMode: BackgroundMode
+  contentMode: ImageContentMode
   pipelineVersion?: ConversionPipelineVersion
 }
 
@@ -34,6 +37,14 @@ export interface ConvertImageSuccess {
   lowConfidenceCells: number
   pipelineVersion: ConversionPipelineVersion
   cleanedCells: number
+  structuralChanges: number
+  ditheredCells: number
+  alignmentOffsetX: number
+  alignmentOffsetY: number
+  detailScore: number
+  recommendedWidth: number
+  recommendedHeight: number
+  shouldRecommendLargerGrid: boolean
 }
 
 export interface ConvertImageFailure {

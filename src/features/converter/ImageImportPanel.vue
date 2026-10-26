@@ -10,6 +10,11 @@ import {
 } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
+import {
+  getImageContentModeOption,
+  imageContentModeOptions,
+  type ImageContentMode,
+} from '@/core/imageContentMode'
 import type { QuantizeStrategy } from '@/core/quantize'
 import type { BeadPalette } from '@/domain/palette/types'
 import type { PatternDocument } from '@/domain/pattern/types'
@@ -45,20 +50,31 @@ const cropOpen = ref(false)
 const freeCrop = ref(false)
 const width = ref(props.pattern.width)
 const height = ref(props.pattern.height)
+const widthDraft = ref(String(width.value))
+const heightDraft = ref(String(height.value))
 const maxColors = ref(12)
 const strategy = ref<QuantizeStrategy>('balanced')
 const backgroundMode = ref<BackgroundMode>('preserve')
+const contentMode = ref<ImageContentMode>('photo')
 const beadSize = ref<5 | 2.6>(2.6)
 const status = ref<'idle' | 'processing' | 'complete' | 'error'>('idle')
 const errorMessage = ref('')
 const croppedSource = ref<ImageData>()
 const croppedRatio = ref('')
-const generatedCells = ref<number[]>([])
+const generatedResult = ref<{
+  width: number
+  height: number
+  cells: number[]
+  signature: string
+}>()
+const generatedCells = computed(() => generatedResult.value?.cells ?? [])
 const previewMode = ref<PatternPreviewMode>('grid')
 const replaceFrom = ref<number>()
 const pipelineLabels: Record<ConversionPipelineVersion, string> = {
   'v1-legacy': '经典采样 V1',
   'v2-adaptive': '自适应采样 V2',
+  'v3-structural': '结构感知 V3',
+  'v4-line-aware': '线条与结构感知 V4',
 }
 const report = ref<{
   engine: string
@@ -67,6 +83,14 @@ const report = ref<{
   lowConfidenceCells: number
   colorCount: number
   cleanedCells: number
+  structuralChanges: number
+  ditheredCells: number
+  alignmentOffsetX: number
+  alignmentOffsetY: number
+  detailScore: number
+  recommendedWidth: number
+  recommendedHeight: number
+  shouldRecommendLargerGrid: boolean
   pipelineVersion: ConversionPipelineVersion
 }>()
 
@@ -74,7 +98,56 @@ const physicalSize = computed(() => ({
   width: ((width.value * beadSize.value) / 10).toFixed(1),
   height: ((height.value * beadSize.value) / 10).toFixed(1),
 }))
-const ratioKey = computed(() => `${width.value}:${height.value}`)
+const paletteSignature = computed(() =>
+  JSON.stringify({
+    id: props.palette.id,
+    version: props.palette.version,
+    colors: props.palette.colors.map((color) => [
+      color.id,
+      color.code,
+      color.hex,
+      color.lab.l,
+      color.lab.a,
+      color.lab.b,
+    ]),
+  }),
+)
+function buildGenerationSignature(generation: {
+  width: number
+  height: number
+  maxColors: number
+  strategy: QuantizeStrategy
+  backgroundMode: BackgroundMode
+  contentMode: ImageContentMode
+}) {
+  return JSON.stringify({
+    ...generation,
+    palette: paletteSignature.value,
+  })
+}
+const currentContentMode = computed(() =>
+  getImageContentModeOption(contentMode.value),
+)
+const generationSignature = computed(() =>
+  buildGenerationSignature({
+    width: width.value,
+    height: height.value,
+    maxColors: maxColors.value,
+    strategy: strategy.value,
+    backgroundMode: backgroundMode.value,
+    contentMode: contentMode.value,
+  }),
+)
+const resultNeedsRegeneration = computed(
+  () =>
+    Boolean(generatedResult.value) &&
+    generatedResult.value?.signature !== generationSignature.value,
+)
+const ratioKey = computed(() => {
+  if (freeCrop.value) return 'free'
+  const ratio = width.value / height.value
+  return Number.isFinite(ratio) && ratio > 0 ? ratio.toPrecision(12) : 'invalid'
+})
 const usage = computed(() => {
   const counts = new Map<number, number>()
   generatedCells.value.forEach((cell) => {
@@ -100,6 +173,42 @@ const usedColorIndexes = computed(() =>
 const activeReplaceEntry = computed(() =>
   usage.value.find((item) => item.colorIndex === replaceFrom.value),
 )
+const detailQualityLabel = computed(() => {
+  const score = report.value?.detailScore ?? 0
+  if (score >= 85) return '细节充足'
+  if (score >= 72) return '基本充足'
+  return '建议放大图纸'
+})
+
+function normalizeGridDimension(value: string, fallback: number) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(300, Math.max(1, Math.round(parsed)))
+}
+
+function updateWidthDraft(event: Event) {
+  widthDraft.value = (event.target as HTMLInputElement).value
+}
+
+function updateHeightDraft(event: Event) {
+  heightDraft.value = (event.target as HTMLInputElement).value
+}
+
+function commitGridSize() {
+  const nextWidth = normalizeGridDimension(widthDraft.value, width.value)
+  const nextHeight = normalizeGridDimension(heightDraft.value, height.value)
+  width.value = nextWidth
+  height.value = nextHeight
+  widthDraft.value = String(nextWidth)
+  heightDraft.value = String(nextHeight)
+}
+
+function handleGridSizeFocusOut(event: FocusEvent) {
+  const fields = event.currentTarget as HTMLElement
+  const nextTarget = event.relatedTarget
+  if (nextTarget && fields.contains(nextTarget as Node)) return
+  commitGridSize()
+}
 
 function setFile(event: Event) {
   const input = event.target as HTMLInputElement
@@ -113,7 +222,7 @@ function setFile(event: Event) {
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
   file.value = selected
   previewUrl.value = URL.createObjectURL(selected)
-  generatedCells.value = []
+  generatedResult.value = undefined
   croppedSource.value = undefined
   report.value = undefined
   status.value = 'idle'
@@ -125,19 +234,34 @@ function setFile(event: Event) {
 async function processSource(source: ImageData) {
   status.value = 'processing'
   errorMessage.value = ''
+  const generation = {
+    width: width.value,
+    height: height.value,
+    maxColors: maxColors.value,
+    strategy: strategy.value,
+    backgroundMode: backgroundMode.value,
+    contentMode: contentMode.value,
+  }
+  const signature = buildGenerationSignature(generation)
   try {
     const processed = await convertImageInWorker(
       source,
-      width.value,
-      height.value,
+      generation.width,
+      generation.height,
       props.palette,
       {
-        maxColors: maxColors.value,
-        strategy: strategy.value,
-        backgroundMode: backgroundMode.value,
+        maxColors: generation.maxColors,
+        strategy: generation.strategy,
+        backgroundMode: generation.backgroundMode,
+        contentMode: generation.contentMode,
       },
     )
-    generatedCells.value = Array.from(new Uint16Array(processed.cells))
+    generatedResult.value = {
+      width: generation.width,
+      height: generation.height,
+      cells: Array.from(new Uint16Array(processed.cells)),
+      signature,
+    }
     report.value = {
       engine:
         processed.engine === 'opencv-wasm' ? 'OpenCV.js / WASM' : 'Canvas 降级',
@@ -146,6 +270,14 @@ async function processSource(source: ImageData) {
       lowConfidenceCells: processed.lowConfidenceCells,
       colorCount: processed.selectedColorIndexes.length,
       cleanedCells: processed.cleanedCells,
+      structuralChanges: processed.structuralChanges,
+      ditheredCells: processed.ditheredCells,
+      alignmentOffsetX: processed.alignmentOffsetX,
+      alignmentOffsetY: processed.alignmentOffsetY,
+      detailScore: processed.detailScore,
+      recommendedWidth: processed.recommendedWidth,
+      recommendedHeight: processed.recommendedHeight,
+      shouldRecommendLargerGrid: processed.shouldRecommendLargerGrid,
       pipelineVersion: processed.pipelineVersion,
     }
     status.value = 'complete'
@@ -172,6 +304,7 @@ async function cropAndGenerate() {
 }
 
 async function regenerate() {
+  if (status.value === 'processing') return
   if (!croppedSource.value || croppedRatio.value !== ratioKey.value) {
     cropOpen.value = true
     return
@@ -179,12 +312,39 @@ async function regenerate() {
   await processSource(croppedSource.value)
 }
 
+async function applyRecommendedSize() {
+  if (
+    status.value === 'processing' ||
+    !report.value?.shouldRecommendLargerGrid
+  ) {
+    return
+  }
+  width.value = report.value.recommendedWidth
+  height.value = report.value.recommendedHeight
+  await regenerate()
+}
+
+function formatGridOffset(value: number) {
+  if (Math.abs(value) < 0.01) return '0'
+  return `${value > 0 ? '+' : ''}${value.toFixed(2)}`
+}
+
 function applyAndOpenEditor() {
-  if (generatedCells.value.length !== width.value * height.value) return
+  const result = generatedResult.value
+  if (!result || resultNeedsRegeneration.value) {
+    status.value = 'error'
+    errorMessage.value = '生成参数已改变，请先重新生成，再进入全屏精修。'
+    return
+  }
+  if (result.cells.length !== result.width * result.height) {
+    status.value = 'error'
+    errorMessage.value = '生成结果尺寸异常，请重新生成后再精修。'
+    return
+  }
   emit('converted', {
-    width: width.value,
-    height: height.value,
-    cells: [...generatedCells.value],
+    width: result.width,
+    height: result.height,
+    cells: [...result.cells],
   })
   emit('openEditor')
 }
@@ -195,9 +355,14 @@ function replaceCandidate(payload: {
 }) {
   const from = replaceFrom.value
   if (from === undefined || from === payload.toColorIndex) return
-  generatedCells.value = generatedCells.value.map((cell) =>
-    cell === from ? payload.toColorIndex : cell,
-  )
+  if (generatedResult.value) {
+    generatedResult.value = {
+      ...generatedResult.value,
+      cells: generatedResult.value.cells.map((cell) =>
+        cell === from ? payload.toColorIndex : cell,
+      ),
+    }
+  }
   replaceFrom.value = undefined
 }
 
@@ -206,6 +371,15 @@ watch(ratioKey, () => {
     croppedSource.value = undefined
   }
 })
+
+watch(
+  [width, height],
+  ([nextWidth, nextHeight]) => {
+    widthDraft.value = String(nextWidth)
+    heightDraft.value = String(nextHeight)
+  },
+  { flush: 'sync' },
+)
 
 onBeforeUnmount(() => {
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
@@ -244,24 +418,43 @@ onBeforeUnmount(() => {
           更换图片
         </button>
         <label>
-          <span>图纸尺寸</span>
-          <span class="inline-fields">
+          <span>输出网格</span>
+          <span
+            class="inline-fields"
+            @focusout="handleGridSizeFocusOut"
+            @keydown.enter.prevent="commitGridSize"
+          >
             <input
-              v-model.number="width"
-              aria-label="图纸宽度"
+              :value="widthDraft"
+              aria-label="输出网格宽度"
               type="number"
               min="1"
               max="300"
+              @input="updateWidthDraft"
             />
             ×
             <input
-              v-model.number="height"
-              aria-label="图纸高度"
+              :value="heightDraft"
+              aria-label="输出网格高度"
               type="number"
               min="1"
               max="300"
+              @input="updateHeightDraft"
             />
           </span>
+        </label>
+        <label class="content-mode-field">
+          <span>图片类型</span>
+          <select v-model="contentMode" aria-label="图片类型">
+            <option
+              v-for="option in imageContentModeOptions"
+              :key="option.id"
+              :value="option.id"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+          <small>{{ currentContentMode.shortDescription }}</small>
         </label>
         <label>
           <span>生成策略</span>
@@ -316,12 +509,24 @@ onBeforeUnmount(() => {
           <RefreshCw :size="17" aria-hidden="true" />
           {{
             status === 'processing'
-              ? '生成中…'
+              ? '正在分析并优化…'
               : generatedCells.length
                 ? '重新生成'
                 : '裁切并生成'
           }}
         </button>
+      </div>
+
+      <div
+        v-if="resultNeedsRegeneration"
+        id="result-stale-notice"
+        class="result-stale-notice"
+        role="status"
+      >
+        <Info :size="17" aria-hidden="true" />
+        <span
+          >生成参数已修改。当前仍展示上一次正确结果，重新生成后才会应用新尺寸和模式。</span
+        >
       </div>
 
       <div v-if="generatedCells.length" class="comparison-grid">
@@ -364,6 +569,15 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 class="fullscreen-button"
+                :disabled="resultNeedsRegeneration"
+                :aria-describedby="
+                  resultNeedsRegeneration ? 'result-stale-notice' : undefined
+                "
+                :title="
+                  resultNeedsRegeneration
+                    ? '请先按新参数重新生成'
+                    : '进入全屏图纸精修'
+                "
                 @click="applyAndOpenEditor"
               >
                 <Expand :size="16" aria-hidden="true" />
@@ -372,8 +586,8 @@ onBeforeUnmount(() => {
             </div>
           </header>
           <PatternPreview
-            :width="width"
-            :height="height"
+            :width="generatedResult?.width ?? width"
+            :height="generatedResult?.height ?? height"
             :cells="generatedCells"
             :palette="palette"
             :mode="previewMode"
@@ -425,16 +639,57 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-if="report" class="generation-report">
-          <span
-            >{{ report.engine }} ·
-            {{ pipelineLabels[report.pipelineVersion] }}</span
-          >
-          <span>平均 ΔE {{ report.averageDeltaE.toFixed(1) }}</span>
-          <span>待确认 {{ report.lowConfidenceCells }} 格</span>
-          <span v-if="report.cleanedCells"
-            >已清理 {{ report.cleanedCells }} 个孤立格</span
-          >
+          <div class="quality-heading">
+            <strong>智能保真转换</strong>
+            <span
+              class="quality-badge"
+              :class="{ warning: report.shouldRecommendLargerGrid }"
+            >
+              {{ detailQualityLabel }}
+            </span>
+          </div>
+          <span>细节评分 {{ report.detailScore }} / 100</span>
+          <span>{{ report.colorCount }} 种颜色</span>
+          <span>建议检查 {{ report.lowConfidenceCells }} 格</span>
+          <details class="technical-report">
+            <summary>转换详情</summary>
+            <div>
+              <span
+                >{{ report.engine }} ·
+                {{ pipelineLabels[report.pipelineVersion] }}</span
+              >
+              <span>平均 ΔE {{ report.averageDeltaE.toFixed(1) }}</span>
+              <span>已清理 {{ report.cleanedCells }} 个孤立格</span>
+              <span>
+                网格对齐 X {{ formatGridOffset(report.alignmentOffsetX) }} / Y
+                {{ formatGridOffset(report.alignmentOffsetY) }} 格
+              </span>
+              <span>结构优化 {{ report.structuralChanges }} 格</span>
+              <span>渐变优化 {{ report.ditheredCells }} 格</span>
+            </div>
+          </details>
         </div>
+      </div>
+      <div
+        v-if="report?.shouldRecommendLargerGrid"
+        class="detail-recommendation"
+      >
+        <Info :size="18" aria-hidden="true" />
+        <p>
+          当前图像细节较多，建议至少使用
+          <strong
+            >{{ report.recommendedWidth }} ×
+            {{ report.recommendedHeight }}</strong
+          >
+          的图纸，能保留更多轮廓和小特征。
+        </p>
+        <button
+          type="button"
+          :disabled="status === 'processing'"
+          @click="applyRecommendedSize"
+        >
+          使用建议尺寸
+        </button>
       </div>
     </template>
 
@@ -474,7 +729,7 @@ onBeforeUnmount(() => {
                   {{
                     freeCrop
                       ? '自由调整裁切框四边与角点，结果会适配到当前图纸尺寸。'
-                      : '裁切框比例与图纸比例同步，修改宽高后会自动重置裁切框。'
+                      : '裁切框跟随输出网格比例；同比例调整只改变精细度，不改变裁切范围。'
                   }}
                 </p>
               </div>
@@ -496,23 +751,49 @@ onBeforeUnmount(() => {
                   自由裁切
                 </button>
               </div>
-              <label>
-                图纸尺寸
-                <span class="inline-fields">
+              <fieldset class="content-mode-options">
+                <legend>图片类型</legend>
+                <label
+                  v-for="option in imageContentModeOptions"
+                  :key="option.id"
+                  :class="{ active: contentMode === option.id }"
+                >
                   <input
-                    v-model.number="width"
+                    v-model="contentMode"
+                    type="radio"
+                    name="content-mode"
+                    :value="option.id"
+                  />
+                  <span>
+                    <strong>{{ option.label }}</strong>
+                    <small>{{ option.description }}</small>
+                    <em>{{ option.tradeoff }}</em>
+                  </span>
+                </label>
+              </fieldset>
+              <label>
+                输出网格
+                <span
+                  class="inline-fields"
+                  @focusout="handleGridSizeFocusOut"
+                  @keydown.enter.prevent="commitGridSize"
+                >
+                  <input
+                    :value="widthDraft"
                     type="number"
                     min="1"
                     max="300"
-                    aria-label="裁切图纸宽度"
+                    aria-label="裁切输出网格宽度"
+                    @input="updateWidthDraft"
                   />
                   ×
                   <input
-                    v-model.number="height"
+                    :value="heightDraft"
                     type="number"
                     min="1"
                     max="300"
-                    aria-label="裁切图纸高度"
+                    aria-label="裁切输出网格高度"
+                    @input="updateHeightDraft"
                   />
                 </span>
               </label>
@@ -564,6 +845,9 @@ onBeforeUnmount(() => {
           </div>
           <footer class="crop-modal-footer">
             <p v-if="status === 'error'" role="alert">{{ errorMessage }}</p>
+            <span v-else-if="status === 'processing'" role="status">
+              正在分析轮廓、对齐网格并匹配 Mard 色号，图片不会上传。
+            </span>
             <span v-else>图片只在本机浏览器处理，不会上传。</span>
             <button type="button" class="secondary" @click="fileInput?.click()">
               重新选择
@@ -575,7 +859,7 @@ onBeforeUnmount(() => {
               @click="cropAndGenerate"
             >
               <Sparkles :size="17" aria-hidden="true" />
-              {{ status === 'processing' ? '正在生成图纸…' : '生成图纸' }}
+              {{ status === 'processing' ? '正在分析并优化…' : '生成图纸' }}
             </button>
           </footer>
         </section>
@@ -697,10 +981,34 @@ onBeforeUnmount(() => {
   z-index: 4;
   top: 8px;
   display: grid;
-  grid-template-columns: auto 1.35fr repeat(4, minmax(112px, 1fr)) 1.3fr auto;
+  grid-template-columns:
+    auto minmax(150px, 1.25fr) minmax(150px, 1.2fr)
+    repeat(4, minmax(108px, 1fr)) 1.2fr auto;
   gap: 10px;
   padding: 12px;
   backdrop-filter: blur(16px);
+}
+
+.content-mode-field small {
+  max-width: 180px;
+  color: var(--text-muted);
+  font-size: 0.6rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.result-stale-notice {
+  display: flex;
+  width: min(820px, calc(100% - 24px));
+  margin: 12px auto 0;
+  padding: 10px 13px;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid rgb(212 175 55 / 40%);
+  border-radius: 12px;
+  color: #6d5411;
+  background: #fff9e6;
+  font-size: 0.74rem;
 }
 
 .generation-settings label,
@@ -955,6 +1263,73 @@ onBeforeUnmount(() => {
 .generation-report {
   display: grid;
   min-width: max-content;
+  gap: 2px;
+}
+
+.quality-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.quality-badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: #376f51;
+  background: #e7f4eb;
+  font-size: 0.62rem;
+  font-weight: 800;
+}
+
+.quality-badge.warning {
+  color: #7c5e12;
+  background: #fff2c9;
+}
+
+.technical-report {
+  margin-top: 3px;
+}
+
+.technical-report summary {
+  width: max-content;
+  color: var(--rose-strong);
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.technical-report > div {
+  display: grid;
+  gap: 1px;
+  padding-top: 5px;
+}
+
+.detail-recommendation {
+  display: flex;
+  width: min(920px, calc(100% - 24px));
+  margin: 12px auto 0;
+  padding: 12px 14px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgb(212 175 55 / 34%);
+  border-radius: 13px;
+  color: var(--text);
+  background: rgb(255 249 229 / 82%);
+}
+
+.detail-recommendation p {
+  flex: 1;
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.detail-recommendation button {
+  flex: none;
+  color: #6d5411;
+  border-color: rgb(212 175 55 / 42%);
+  background: white;
+  font-weight: 800;
 }
 
 .crop-modal-backdrop {
@@ -971,7 +1346,9 @@ onBeforeUnmount(() => {
 .crop-modal {
   display: grid;
   width: min(1420px, 96vw);
+  height: 94vh;
   max-height: 94vh;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
   border-radius: 24px;
   background: var(--surface);
@@ -1002,17 +1379,21 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(0, 1fr) 300px;
   gap: 22px;
   padding: 20px 24px;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .crop-settings {
   display: grid;
+  min-height: 0;
   align-content: start;
   gap: 15px;
   padding: 18px;
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 16px;
   background: #fffafa;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .crop-ratio-switch {
@@ -1040,6 +1421,68 @@ onBeforeUnmount(() => {
   color: var(--rose-strong);
   background: white;
   box-shadow: 0 4px 12px rgb(61 39 43 / 8%);
+}
+
+.content-mode-options {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.content-mode-options legend {
+  margin-bottom: 6px;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.content-mode-options > label {
+  position: relative;
+  display: block;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: white;
+  cursor: pointer;
+}
+
+.content-mode-options > label.active {
+  border-color: var(--rose-strong);
+  background: var(--rose-pale);
+  box-shadow: 0 0 0 2px rgb(184 65 70 / 9%);
+}
+
+.content-mode-options input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.content-mode-options span {
+  display: grid;
+  gap: 3px;
+}
+
+.content-mode-options strong {
+  color: var(--text);
+  font-size: 0.74rem;
+}
+
+.content-mode-options small,
+.content-mode-options em {
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.content-mode-options em {
+  color: #8a655a;
 }
 
 .settings-callout {
@@ -1106,10 +1549,18 @@ onBeforeUnmount(() => {
 
   .crop-modal-body {
     grid-template-columns: 1fr;
+    overflow-y: auto;
   }
 
   .crop-settings {
     grid-template-columns: repeat(3, 1fr);
+    overflow-y: visible;
+  }
+
+  .content-mode-options,
+  .settings-callout,
+  .crop-ratio-switch {
+    grid-column: 1 / -1;
   }
 }
 

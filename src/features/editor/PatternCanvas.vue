@@ -34,11 +34,13 @@ const props = withDefaults(
     tracingScaleX?: number
     tracingScaleY?: number
     tracingDraggable?: boolean
+    hiddenColorIndexes?: number[]
   }>(),
   {
     tracingScaleX: 1,
     tracingScaleY: 1,
     tracingDraggable: false,
+    hiddenColorIndexes: () => [],
   },
 )
 
@@ -107,6 +109,7 @@ function drawGrid(
   showGrid: boolean,
   showGuides: boolean,
   draftCells?: ReadonlyMap<number, number>,
+  hiddenColorIndexes?: ReadonlySet<number>,
 ) {
   const logicalWidth = props.pattern.width * cellSize
   const logicalHeight = props.pattern.height * cellSize
@@ -124,6 +127,7 @@ function drawGrid(
   for (let index = 0; index < props.pattern.cells.length; index += 1) {
     const colorIndex = draftCells?.get(index) ?? props.pattern.cells[index] ?? 0
     if (colorIndex <= 0) continue
+    if (hiddenColorIndexes?.has(colorIndex)) continue
     const color = props.palette.colors[colorIndex - 1]
     if (!color) continue
     const x = (index % props.pattern.width) * cellSize
@@ -202,6 +206,7 @@ function render() {
     props.showGrid,
     props.showGuides,
     draft,
+    new Set(props.hiddenColorIndexes),
   )
   drawTracingOverlay()
   drawSelection()
@@ -583,6 +588,7 @@ watch(
     props.tracingOffsetY,
     props.tracingScaleX,
     props.tracingScaleY,
+    props.hiddenColorIndexes,
   ],
   () => nextTick(render),
 )
