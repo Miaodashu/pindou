@@ -441,7 +441,7 @@ export function sampleImageToGrid(
             winningBucket.share <= 0.46 &&
             lineStrength >= 0.16,
           )
-          candidates = rankedBuckets.slice(0, 4).map(({ bucket, score }) => ({
+          candidates = rankedBuckets.slice(0, 3).map(({ bucket, score }) => ({
             red: linearToSrgb(bucket.linearRed / bucket.weight),
             green: linearToSrgb(bucket.linearGreen / bucket.weight),
             blue: linearToSrgb(bucket.linearBlue / bucket.weight),

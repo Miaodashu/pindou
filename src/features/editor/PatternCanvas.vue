@@ -1,6 +1,10 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
+import {
+  calculateCanvasBackingStore,
+  calculateCanvasExportCellSize,
+} from '@/core/canvasBackingStore'
 import {
   lassoSelection,
   rectangleSelection,
@@ -12,6 +16,11 @@ import type { CellEdit, PatternDocument } from '@/domain/pattern/types'
 import type { EditorTool } from './editorStore'
 
 type PatternViewMode = 'construction' | 'color-block'
+
+interface CanvasExportResult {
+  blob: Blob
+  cellSize: number
+}
 
 const props = withDefaults(
   defineProps<{
@@ -75,6 +84,7 @@ let tracingDragging:
 let tracingDragDelta = { x: 0, y: 0 }
 let tracingImage: HTMLImageElement | undefined
 let tracingLoadToken = 0
+let renderFrame: number | undefined
 
 const BASE_CELL_SIZE = 25
 const AXIS_SIZE = 30
@@ -113,14 +123,28 @@ function drawGrid(
 ) {
   const logicalWidth = props.pattern.width * cellSize
   const logicalHeight = props.pattern.height * cellSize
-  target.width = Math.max(1, Math.round(logicalWidth * pixelRatio))
-  target.height = Math.max(1, Math.round(logicalHeight * pixelRatio))
-  target.style.width = `${logicalWidth}px`
-  target.style.height = `${logicalHeight}px`
+  const backingStore = calculateCanvasBackingStore(
+    logicalWidth,
+    logicalHeight,
+    pixelRatio,
+  )
+  if (target.width !== backingStore.width) target.width = backingStore.width
+  if (target.height !== backingStore.height) target.height = backingStore.height
+  const styleWidth = `${logicalWidth}px`
+  const styleHeight = `${logicalHeight}px`
+  if (target.style.width !== styleWidth) target.style.width = styleWidth
+  if (target.style.height !== styleHeight) target.style.height = styleHeight
 
   const context = target.getContext('2d')
-  if (!context) return
-  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
+  if (!context) return backingStore.pixelRatio
+  context.setTransform(
+    backingStore.pixelRatio,
+    0,
+    0,
+    backingStore.pixelRatio,
+    0,
+    0,
+  )
   context.fillStyle = '#fffdf9'
   context.fillRect(0, 0, logicalWidth, logicalHeight)
 
@@ -194,11 +218,16 @@ function drawGrid(
     context.stroke()
     context.restore()
   }
+  return backingStore.pixelRatio
 }
 
 function render() {
+  if (renderFrame !== undefined) {
+    window.cancelAnimationFrame(renderFrame)
+    renderFrame = undefined
+  }
   if (!canvas.value) return
-  drawGrid(
+  const pixelRatio = drawGrid(
     canvas.value,
     BASE_CELL_SIZE * props.zoom,
     window.devicePixelRatio,
@@ -208,11 +237,19 @@ function render() {
     draft,
     new Set(props.hiddenColorIndexes),
   )
-  drawTracingOverlay()
-  drawSelection()
+  drawTracingOverlay(pixelRatio)
+  drawSelection(pixelRatio)
 }
 
-function drawTracingOverlay() {
+function requestRender() {
+  if (renderFrame !== undefined) return
+  renderFrame = window.requestAnimationFrame(() => {
+    renderFrame = undefined
+    render()
+  })
+}
+
+function drawTracingOverlay(pixelRatio: number) {
   const target = canvas.value
   const image = tracingImage
   if (!target || !image || !props.tracingVisible) return
@@ -235,14 +272,7 @@ function drawTracingOverlay() {
     (props.tracingOffsetY + tracingDragDelta.y) * size
 
   context.save()
-  context.setTransform(
-    window.devicePixelRatio,
-    0,
-    0,
-    window.devicePixelRatio,
-    0,
-    0,
-  )
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
   context.beginPath()
   context.rect(0, 0, logicalWidth, logicalHeight)
   context.clip()
@@ -272,21 +302,14 @@ function loadTracingImage(url: string) {
   image.src = url
 }
 
-function drawSelection() {
+function drawSelection(pixelRatio: number) {
   const target = canvas.value
   if (!target) return
   const size = cellSize.value
   const context = target.getContext('2d')
   if (!context) return
   context.save()
-  context.setTransform(
-    window.devicePixelRatio,
-    0,
-    0,
-    window.devicePixelRatio,
-    0,
-    0,
-  )
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
 
   if (!selecting && props.selection.length > 0) {
     const selected = new Set(props.selection)
@@ -460,7 +483,7 @@ function handlePointerDown(event: PointerEvent) {
     selectionEnd = point
     lassoPoints = [point]
     canvas.value?.setPointerCapture(event.pointerId)
-    render()
+    requestRender()
     return
   }
 
@@ -468,7 +491,7 @@ function handlePointerDown(event: PointerEvent) {
   lastCell = cell
   canvas.value?.setPointerCapture(event.pointerId)
   paintCell(cell.x, cell.y)
-  render()
+  requestRender()
 }
 
 function handlePointerMove(event: PointerEvent) {
@@ -477,7 +500,7 @@ function handlePointerMove(event: PointerEvent) {
       x: (event.clientX - tracingDragging.x) / cellSize.value,
       y: (event.clientY - tracingDragging.y) / cellSize.value,
     }
-    render()
+    requestRender()
     return
   }
   if (panning) {
@@ -500,7 +523,7 @@ function handlePointerMove(event: PointerEvent) {
         lassoPoints.push(point)
       }
     }
-    render()
+    requestRender()
     return
   }
   if (!drawing) return
@@ -508,7 +531,7 @@ function handlePointerMove(event: PointerEvent) {
   if (!cell) return
   if (lastCell) paintLine(lastCell, cell)
   lastCell = cell
-  render()
+  requestRender()
 }
 
 function commitInteraction() {
@@ -517,7 +540,7 @@ function commitInteraction() {
     tracingDragging = undefined
     tracingDragDelta = { x: 0, y: 0 }
     if (delta.x || delta.y) emit('tracingMove', delta)
-    render()
+    requestRender()
     return
   }
   if (panning) {
@@ -539,7 +562,7 @@ function commitInteraction() {
     selectionEnd = undefined
     lassoPoints = []
     emit('selectionChange', indexes)
-    render()
+    requestRender()
     return
   }
   if (!drawing) return
@@ -558,12 +581,18 @@ async function exportPng(
   viewMode: PatternViewMode,
   showGrid = true,
   showGuides = false,
-): Promise<Blob> {
+): Promise<CanvasExportResult> {
+  const desiredCellSize = 36
+  const exportCellSize = calculateCanvasExportCellSize(
+    props.pattern.width,
+    props.pattern.height,
+    desiredCellSize,
+  )
   const exportCanvas = document.createElement('canvas')
-  drawGrid(exportCanvas, 36, 1, viewMode, showGrid, showGuides)
+  drawGrid(exportCanvas, exportCellSize, 1, viewMode, showGrid, showGuides)
   return new Promise((resolve, reject) => {
     exportCanvas.toBlob((blob) => {
-      if (blob) resolve(blob)
+      if (blob) resolve({ blob, cellSize: exportCellSize })
       else reject(new Error('无法生成 PNG 图纸。'))
     }, 'image/png')
   })
@@ -590,10 +619,13 @@ watch(
     props.tracingScaleY,
     props.hiddenColorIndexes,
   ],
-  () => nextTick(render),
+  () => nextTick(requestRender),
 )
 watch(() => props.tracingImageUrl, loadTracingImage, { immediate: true })
 onMounted(render)
+onBeforeUnmount(() => {
+  if (renderFrame !== undefined) window.cancelAnimationFrame(renderFrame)
+})
 </script>
 
 <template>

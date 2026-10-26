@@ -12,12 +12,20 @@ import type { BeadPalette } from '@/domain/palette/types'
 import { createPattern } from '@/domain/pattern/createPattern'
 import type { CellEdit, PatternDocument } from '@/domain/pattern/types'
 import {
+  createDerivedPatternLink,
+  migrateLegacyDerivedPatternLink,
+} from '@/domain/project/derivedPatternLink'
+import {
+  deleteDerivedPatternLink,
+  getDerivedPatternLink,
   getPalette,
   getPattern,
   getLatestPattern,
   getInventory,
   getTracingAsset,
   saveInventory,
+  saveDerivedPattern,
+  saveDerivedPatternLink,
   savePalette,
   savePattern,
   saveTracingAsset,
@@ -26,6 +34,7 @@ import {
 export type EditorTool = 'move' | 'pencil' | 'eraser' | 'picker' | 'select'
 
 const MAX_HISTORY = 100
+const LEGACY_DERIVED_PATTERN_LINK_KEY = 'pindou-derived-pattern-link-v1'
 
 export const useEditorStore = defineStore('editor', () => {
   const pattern = ref<PatternDocument>(createPattern())
@@ -49,6 +58,12 @@ export const useEditorStore = defineStore('editor', () => {
   let tracingImageBlob: Blob | undefined
   let saveTimer: number | undefined
   let tracingSaveTimer: number | undefined
+  let patternSaveVersion = 0
+  let tracingSaveVersion = 0
+  let patternDirty = false
+  let tracingDirty = false
+  let persistenceLifecycleInstalled = false
+  let persistenceFlush: Promise<void> | undefined
 
   const canUndo = computed(() => undoStack.value.length > 0)
   const canRedo = computed(() => redoStack.value.length > 0)
@@ -80,21 +95,39 @@ export const useEditorStore = defineStore('editor', () => {
   function touch() {
     pattern.value.updatedAt = new Date().toISOString()
     revision.value += 1
+    patternSaveVersion += 1
+    patternDirty = true
     scheduleSave()
   }
 
   function scheduleSave() {
     window.clearTimeout(saveTimer)
     persistenceStatus.value = 'saving'
-    saveTimer = window.setTimeout(async () => {
-      try {
-        await savePattern(pattern.value)
-        persistenceStatus.value = 'saved'
-      } catch (error) {
-        console.error('Failed to persist pattern', error)
-        persistenceStatus.value = 'error'
+    saveTimer = window.setTimeout(
+      () => void flushPersistence().catch(() => undefined),
+      450,
+    )
+  }
+
+  async function persistPatternNow() {
+    window.clearTimeout(saveTimer)
+    saveTimer = undefined
+    if (!patternDirty) return true
+    const version = patternSaveVersion
+    const snapshot: PatternDocument = {
+      ...pattern.value,
+      cells: [...pattern.value.cells],
+    }
+    try {
+      await savePattern(snapshot)
+      if (version === patternSaveVersion) {
+        patternDirty = false
       }
-    }, 450)
+      return true
+    } catch (error) {
+      console.error('Failed to persist pattern', error)
+      return false
+    }
   }
 
   function persistPalette(value: BeadPalette) {
@@ -134,6 +167,8 @@ export const useEditorStore = defineStore('editor', () => {
 
   function resetTracing() {
     window.clearTimeout(tracingSaveTimer)
+    tracingSaveTimer = undefined
+    tracingDirty = false
     revokeTracingUrl()
     tracingImageBlob = undefined
     tracingFileName.value = ''
@@ -168,31 +203,102 @@ export const useEditorStore = defineStore('editor', () => {
   function scheduleTracingSave() {
     if (!tracingImageBlob) return
     window.clearTimeout(tracingSaveTimer)
-    tracingSaveTimer = window.setTimeout(() => {
-      const blob = tracingImageBlob
-      if (!blob) return
-      void blob
-        .arrayBuffer()
-        .then((image) =>
-          saveTracingAsset({
-            patternId: pattern.value.id,
-            image,
-            mimeType: blob.type,
-            fileName: tracingFileName.value,
-            visible: tracingVisible.value,
-            opacity: tracingOpacity.value,
-            offsetX: tracingOffsetX.value,
-            offsetY: tracingOffsetY.value,
-            scaleX: tracingScaleX.value,
-            scaleY: tracingScaleY.value,
-            updatedAt: new Date().toISOString(),
-          }),
-        )
-        .catch((error: unknown) => {
-          console.error('Failed to persist tracing image', error)
+    tracingSaveVersion += 1
+    tracingDirty = true
+    persistenceStatus.value = 'saving'
+    tracingSaveTimer = window.setTimeout(
+      () => void flushPersistence().catch(() => undefined),
+      300,
+    )
+  }
+
+  async function persistTracingNow() {
+    window.clearTimeout(tracingSaveTimer)
+    tracingSaveTimer = undefined
+    const blob = tracingImageBlob
+    if (!tracingDirty || !blob) return true
+    const version = tracingSaveVersion
+    const patternId = pattern.value.id
+    const asset = {
+      patternId,
+      mimeType: blob.type,
+      fileName: tracingFileName.value,
+      visible: tracingVisible.value,
+      opacity: tracingOpacity.value,
+      offsetX: tracingOffsetX.value,
+      offsetY: tracingOffsetY.value,
+      scaleX: tracingScaleX.value,
+      scaleY: tracingScaleY.value,
+      updatedAt: new Date().toISOString(),
+    }
+    try {
+      const image = await blob.arrayBuffer()
+      await saveTracingAsset({
+        ...asset,
+        image,
+      })
+      if (
+        version === tracingSaveVersion &&
+        blob === tracingImageBlob &&
+        patternId === pattern.value.id
+      ) {
+        tracingDirty = false
+      }
+      return true
+    } catch (error) {
+      console.error('Failed to persist tracing image', error)
+      return false
+    }
+  }
+
+  function flushPersistence() {
+    if (persistenceFlush) return persistenceFlush
+    persistenceFlush = (async () => {
+      while (patternDirty || tracingDirty) {
+        persistenceStatus.value = 'saving'
+        const [patternSaved, tracingSaved] = await Promise.all([
+          persistPatternNow(),
+          persistTracingNow(),
+        ])
+        if (!patternSaved || !tracingSaved) {
           persistenceStatus.value = 'error'
-        })
-    }, 300)
+          throw new Error('本地草稿保存失败。')
+        }
+      }
+      persistenceStatus.value = 'saved'
+    })().finally(() => {
+      persistenceFlush = undefined
+    })
+    return persistenceFlush
+  }
+
+  function installPersistenceLifecycle() {
+    if (persistenceLifecycleInstalled) return
+    persistenceLifecycleInstalled = true
+    window.addEventListener(
+      'pagehide',
+      () => void flushPersistence().catch(() => undefined),
+    )
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        void flushPersistence().catch(() => undefined)
+      }
+    })
+  }
+
+  async function migrateLegacyDerivedPatternLinkIfNeeded() {
+    try {
+      const serialized = window.localStorage.getItem(
+        LEGACY_DERIVED_PATTERN_LINK_KEY,
+      )
+      if (!serialized) return
+      const migrated = migrateLegacyDerivedPatternLink(JSON.parse(serialized))
+      if (!migrated) return
+      await saveDerivedPatternLink(migrated)
+      window.localStorage.removeItem(LEGACY_DERIVED_PATTERN_LINK_KEY)
+    } catch (error) {
+      console.error('Failed to migrate derived pattern link', error)
+    }
   }
 
   function setTracingImage(file: File) {
@@ -346,15 +452,18 @@ export const useEditorStore = defineStore('editor', () => {
       ...pattern.value,
       cells: [...pattern.value.cells],
     }
-    await savePattern(sourceSnapshot)
     const derived = createPattern(width, height, palette.value.id)
     derived.title = title.trim().slice(0, 120) || '小尺寸图纸'
     derived.cells = [...cells]
+    await saveDerivedPattern(
+      sourceSnapshot,
+      derived,
+      createDerivedPatternLink(derived.id, sourceSnapshot.id),
+    )
     pattern.value = derived
     undoStack.value = []
     redoStack.value = []
     resetTracing()
-    await savePattern(derived)
     touch()
     return sourceSnapshot
   }
@@ -363,7 +472,9 @@ export const useEditorStore = defineStore('editor', () => {
     if (snapshot.cells.length !== snapshot.width * snapshot.height) {
       throw new Error('恢复图纸的数据尺寸不一致。')
     }
+    const derivedPatternId = pattern.value.id
     await savePattern(pattern.value)
+    await deleteDerivedPatternLink(derivedPatternId)
     pattern.value = { ...snapshot, cells: [...snapshot.cells] }
     undoStack.value = []
     redoStack.value = []
@@ -374,6 +485,14 @@ export const useEditorStore = defineStore('editor', () => {
   async function getPatternSnapshot(patternId: string) {
     const saved = await getPattern(patternId)
     return saved ? { ...saved, cells: [...saved.cells] } : undefined
+  }
+
+  async function getDerivedSourceSnapshot(derivedPatternId: string) {
+    const link = await getDerivedPatternLink(derivedPatternId)
+    if (!link) return undefined
+    const snapshot = await getPatternSnapshot(link.sourcePatternId)
+    if (!snapshot) await deleteDerivedPatternLink(derivedPatternId)
+    return snapshot
   }
 
   function loadReconstruction(
@@ -403,7 +522,9 @@ export const useEditorStore = defineStore('editor', () => {
 
   async function hydrate() {
     if (isHydrated.value) return
+    installPersistenceLifecycle()
     try {
+      await migrateLegacyDerivedPatternLinkIfNeeded()
       const saved = await getLatestPattern()
       if (saved?.paletteId === mard221Palette.id) {
         palette.value = mard221Palette
@@ -481,6 +602,7 @@ export const useEditorStore = defineStore('editor', () => {
     newPattern,
     createDerivedPattern,
     getPatternSnapshot,
+    getDerivedSourceSnapshot,
     restorePatternSnapshot,
     loadReconstruction,
     rename,
@@ -488,5 +610,6 @@ export const useEditorStore = defineStore('editor', () => {
     setInventoryStock,
     setTracingImage,
     updateTracingSettings,
+    flushPersistence,
   }
 })

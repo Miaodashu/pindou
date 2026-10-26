@@ -3,6 +3,11 @@ import type { BeanInventoryRecord } from '@/domain/inventory/beanInventory'
 import { parsePaletteDocument } from '@/domain/palette/parsePalette'
 import type { BeadPalette } from '@/domain/palette/types'
 import {
+  parseDerivedPatternLink,
+  safeParseDerivedPatternLink,
+  type DerivedPatternLink,
+} from '@/domain/project/derivedPatternLink'
+import {
   parsePatternDocument,
   safeParsePatternDocument,
 } from '@/domain/pattern/parsePattern'
@@ -40,12 +45,16 @@ interface PindouDatabase extends DBSchema {
     key: string
     value: TracingAssetRecord
   }
+  derivedPatternLinks: {
+    key: string
+    value: DerivedPatternLink
+  }
 }
 
 let databasePromise: Promise<IDBPDatabase<PindouDatabase>> | undefined
 
 function getDatabase() {
-  databasePromise ??= openDB<PindouDatabase>('pindou-studio', 4, {
+  databasePromise ??= openDB<PindouDatabase>('pindou-studio', 5, {
     upgrade(database) {
       if (!database.objectStoreNames.contains('patterns')) {
         const store = database.createObjectStore('patterns', { keyPath: 'id' })
@@ -59,6 +68,11 @@ function getDatabase() {
       }
       if (!database.objectStoreNames.contains('tracingAssets')) {
         database.createObjectStore('tracingAssets', { keyPath: 'patternId' })
+      }
+      if (!database.objectStoreNames.contains('derivedPatternLinks')) {
+        database.createObjectStore('derivedPatternLinks', {
+          keyPath: 'derivedPatternId',
+        })
       }
     },
   })
@@ -91,6 +105,49 @@ export async function getTracingAsset(
 ): Promise<TracingAssetRecord | undefined> {
   const database = await getDatabase()
   return database.get('tracingAssets', patternId)
+}
+
+export async function saveDerivedPatternLink(
+  link: DerivedPatternLink,
+): Promise<void> {
+  const database = await getDatabase()
+  await database.put('derivedPatternLinks', parseDerivedPatternLink(link))
+}
+
+export async function saveDerivedPattern(
+  source: PatternDocument,
+  derived: PatternDocument,
+  link: DerivedPatternLink,
+): Promise<void> {
+  const parsedSource = parsePatternDocument(source)
+  const parsedDerived = parsePatternDocument(derived)
+  const parsedLink = parseDerivedPatternLink(link)
+  const database = await getDatabase()
+  const transaction = database.transaction(
+    ['patterns', 'derivedPatternLinks'],
+    'readwrite',
+  )
+  await Promise.all([
+    transaction.objectStore('patterns').put(parsedSource),
+    transaction.objectStore('patterns').put(parsedDerived),
+    transaction.objectStore('derivedPatternLinks').put(parsedLink),
+    transaction.done,
+  ])
+}
+
+export async function getDerivedPatternLink(
+  derivedPatternId: string,
+): Promise<DerivedPatternLink | undefined> {
+  const database = await getDatabase()
+  const value = await database.get('derivedPatternLinks', derivedPatternId)
+  return value ? safeParseDerivedPatternLink(value) : undefined
+}
+
+export async function deleteDerivedPatternLink(
+  derivedPatternId: string,
+): Promise<void> {
+  const database = await getDatabase()
+  await database.delete('derivedPatternLinks', derivedPatternId)
 }
 
 export async function savePattern(pattern: PatternDocument): Promise<void> {

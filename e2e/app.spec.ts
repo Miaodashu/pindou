@@ -125,7 +125,8 @@ test('converts an imported image with OpenCV WebAssembly', async ({ page }) => {
   await expect(convertButton).toBeEnabled({ timeout: 5_000 })
   await convertButton.click()
 
-  await expect(page.getByText('OpenCV.js / WASM')).toBeVisible({
+  await page.getByText('转换详情', { exact: true }).click()
+  await expect(page.getByText(/OpenCV\.js \/ WASM ·/)).toBeVisible({
     timeout: 30_000,
   })
   await expect(page.getByLabel('重新上传原图')).toBeVisible()
@@ -166,6 +167,117 @@ test('persists a drawn bead across reloads', async ({ page }) => {
   await page.reload()
   await openFullEditor(page)
   await expect(page.locator('.summary-panel h2')).toContainText('1 颗')
+})
+
+test('upgrades a v4 database and migrates the legacy derived link', async ({
+  page,
+}) => {
+  await page.goto('/examples/palette-template.json')
+  await page.evaluate(async () => {
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open('pindou-studio', 4)
+      request.onerror = () => reject(request.error)
+      request.onupgradeneeded = () => {
+        const database = request.result
+        const patterns = database.createObjectStore('patterns', {
+          keyPath: 'id',
+        })
+        patterns.createIndex('by-updated-at', 'updatedAt')
+        database.createObjectStore('palettes', { keyPath: 'id' })
+        database.createObjectStore('inventories', { keyPath: 'paletteId' })
+        database.createObjectStore('tracingAssets', { keyPath: 'patternId' })
+      }
+      request.onsuccess = () => {
+        const database = request.result
+        const transaction = database.transaction('patterns', 'readwrite')
+        const store = transaction.objectStore('patterns')
+        store.put({
+          version: 1,
+          id: 'legacy-source',
+          title: '旧版大图原稿',
+          paletteId: 'mard-221-reference-v1',
+          width: 2,
+          height: 2,
+          cells: [1, 1, 1, 1],
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        })
+        store.put({
+          version: 1,
+          id: 'legacy-derived',
+          title: '旧版小图副本',
+          paletteId: 'mard-221-reference-v1',
+          width: 1,
+          height: 1,
+          cells: [1],
+          createdAt: '2026-01-02T00:00:00.000Z',
+          updatedAt: '2026-01-02T00:00:00.000Z',
+        })
+        transaction.oncomplete = () => {
+          database.close()
+          resolve()
+        }
+        transaction.onerror = () => reject(transaction.error)
+      }
+    })
+    localStorage.setItem(
+      'pindou-derived-pattern-link-v1',
+      JSON.stringify({
+        derivedPatternId: 'legacy-derived',
+        sourcePatternId: 'legacy-source',
+      }),
+    )
+  })
+
+  await page.goto('/editor')
+  await expect(page.locator('.editor-page')).toHaveAttribute(
+    'aria-busy',
+    'false',
+  )
+  await expect(page.getByLabel('图纸名称')).toHaveValue('旧版小图副本')
+  await openFullEditor(page)
+  await expect(page.locator('.restore-large-pattern')).toHaveCount(1)
+
+  const migrated = await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('pindou-studio')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const transaction = database.transaction(
+      ['patterns', 'derivedPatternLinks'],
+      'readonly',
+    )
+    const patternRequest = transaction
+      .objectStore('patterns')
+      .get('legacy-source')
+    const linkRequest = transaction
+      .objectStore('derivedPatternLinks')
+      .get('legacy-derived')
+    const result = await new Promise<{
+      version: number
+      sourceTitle?: string
+      linkVersion?: number
+      legacyValue: string | null
+    }>((resolve, reject) => {
+      transaction.oncomplete = () =>
+        resolve({
+          version: database.version,
+          sourceTitle: patternRequest.result?.title,
+          linkVersion: linkRequest.result?.version,
+          legacyValue: localStorage.getItem('pindou-derived-pattern-link-v1'),
+        })
+      transaction.onerror = () => reject(transaction.error)
+    })
+    database.close()
+    return result
+  })
+  expect(migrated).toEqual({
+    version: 5,
+    sourceTitle: '旧版大图原稿',
+    linkVersion: 1,
+    legacyValue: null,
+  })
 })
 
 test('switches render modes, picks colors, and exports both views', async ({
@@ -265,17 +377,20 @@ test('searches colors and applies production editing helpers', async ({
   await replaceDialog.getByRole('button', { name: /F3/ }).click()
   await replaceDialog.getByRole('button', { name: '替换全部 1 格' }).click()
   await expect(page.getByText('已将 C5 替换为 F3 · 可撤销')).toBeVisible()
-  const replacedPixel = await canvas.evaluate((element) => {
-    const target = element as HTMLCanvasElement
-    const scale = target.width / target.clientWidth
-    return Array.from(
-      target
-        .getContext('2d')
-        ?.getImageData(Math.round(4 * scale), Math.round(4 * scale), 1, 1)
-        .data ?? [],
-    ).slice(0, 3)
-  })
-  expect(replacedPixel).toEqual([247, 73, 65])
+  await expect
+    .poll(() =>
+      canvas.evaluate((element) => {
+        const target = element as HTMLCanvasElement
+        const scale = target.width / target.clientWidth
+        return Array.from(
+          target
+            .getContext('2d')
+            ?.getImageData(Math.round(4 * scale), Math.round(4 * scale), 1, 1)
+            .data ?? [],
+        ).slice(0, 3)
+      }),
+    )
+    .toEqual([247, 73, 65])
 
   const guideButton = page.getByRole('button', { name: '参考线' })
   await guideButton.click()
@@ -283,17 +398,20 @@ test('searches colors and applies production editing helpers', async ({
 
   await page.getByRole('button', { name: '水平翻转' }).click()
   await expect(page.getByText('图纸已水平翻转')).toBeVisible()
-  const mirroredPixel = await canvas.evaluate((element) => {
-    const target = element as HTMLCanvasElement
-    const scale = target.width / target.clientWidth
-    return Array.from(
-      target
-        .getContext('2d')
-        ?.getImageData(Math.round(704 * scale), Math.round(4 * scale), 1, 1)
-        .data ?? [],
-    ).slice(0, 3)
-  })
-  expect(mirroredPixel).toEqual([247, 73, 65])
+  await expect
+    .poll(() =>
+      canvas.evaluate((element) => {
+        const target = element as HTMLCanvasElement
+        const scale = target.width / target.clientWidth
+        return Array.from(
+          target
+            .getContext('2d')
+            ?.getImageData(Math.round(704 * scale), Math.round(4 * scale), 1, 1)
+            .data ?? [],
+        ).slice(0, 3)
+      }),
+    )
+    .toEqual([247, 73, 65])
   await page.getByRole('button', { name: '撤销' }).click()
   await expect(page.locator('.summary-panel h2')).toContainText('1 颗')
 })

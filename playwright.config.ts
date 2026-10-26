@@ -2,7 +2,11 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: true,
+  // OpenCV/WASM and high-DPI canvas scenarios are intentionally heavyweight.
+  // Run browser projects serially so those scenarios do not starve unrelated
+  // editor tests on the same machine.
+  fullyParallel: false,
+  workers: 1,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   reporter: 'html',

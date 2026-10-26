@@ -41,7 +41,7 @@ interface PatternCanvasApi {
     viewMode: PatternViewMode,
     showGrid?: boolean,
     showGuides?: boolean,
-  ) => Promise<Blob>
+  ) => Promise<{ blob: Blob; cellSize: number }>
 }
 
 const store = useEditorStore()
@@ -86,41 +86,6 @@ const downscaleHeight = ref(20)
 const largePatternBackup = ref<PatternDocument>()
 const downscaling = ref(false)
 let temporaryTool: EditorTool | undefined
-
-const DERIVED_PATTERN_LINK_KEY = 'pindou-derived-pattern-link-v1'
-
-interface DerivedPatternLink {
-  derivedPatternId: string
-  sourcePatternId: string
-}
-
-function readDerivedPatternLink(): DerivedPatternLink | undefined {
-  try {
-    const value = JSON.parse(
-      window.localStorage.getItem(DERIVED_PATTERN_LINK_KEY) ?? 'null',
-    ) as Partial<DerivedPatternLink> | null
-    if (
-      typeof value?.derivedPatternId !== 'string' ||
-      typeof value.sourcePatternId !== 'string'
-    ) {
-      return undefined
-    }
-    return {
-      derivedPatternId: value.derivedPatternId,
-      sourcePatternId: value.sourcePatternId,
-    }
-  } catch {
-    return undefined
-  }
-}
-
-function saveDerivedPatternLink(link: DerivedPatternLink) {
-  window.localStorage.setItem(DERIVED_PATTERN_LINK_KEY, JSON.stringify(link))
-}
-
-function clearDerivedPatternLink() {
-  window.localStorage.removeItem(DERIVED_PATTERN_LINK_KEY)
-}
 
 const persistenceLabel = computed(() => {
   const labels = {
@@ -239,11 +204,17 @@ async function exportPng(mode: PatternViewMode) {
   const suffix = mode === 'construction' ? '施工图' : '色块图'
   const includeGrid =
     mode === 'construction' || (mode === 'color-block' && showGrid.value)
-  download(
-    await canvas.value.exportPng(mode, includeGrid, showGuides.value),
-    safeFileName(`${suffix}.png`),
+  const result = await canvas.value.exportPng(
+    mode,
+    includeGrid,
+    showGuides.value,
   )
-  notify(`${suffix} PNG 已导出`)
+  download(result.blob, safeFileName(`${suffix}.png`))
+  notify(
+    result.cellSize < 36
+      ? `${suffix} PNG 已按 ${result.cellSize}px/格安全导出`
+      : `${suffix} PNG 已导出`,
+  )
 }
 
 function csvCell(value: string | number) {
@@ -369,10 +340,6 @@ async function createSmallerPattern() {
       `${pattern.value.title} · 小尺寸 ${width}×${height}`,
     )
     largePatternBackup.value = sourceSnapshot
-    saveDerivedPatternLink({
-      derivedPatternId: pattern.value.id,
-      sourcePatternId: sourceSnapshot.id,
-    })
     hiddenColorIndexes.value = []
     selection.value = []
     zoom.value = 1
@@ -394,7 +361,6 @@ async function restoreLargePattern() {
   try {
     await store.restorePatternSnapshot(backup)
     largePatternBackup.value = undefined
-    clearDerivedPatternLink()
     hiddenColorIndexes.value = []
     selection.value = []
     notify(`已恢复 ${backup.width} × ${backup.height} 大图原稿`)
@@ -555,12 +521,9 @@ watch(
     downscaleWidth.value = Math.max(1, Math.round(pattern.value.width * 0.7))
     downscaleHeight.value = Math.max(1, Math.round(pattern.value.height * 0.7))
     largePatternBackup.value = undefined
-    const link = readDerivedPatternLink()
-    if (link?.derivedPatternId !== patternId) return
-    const snapshot = await store.getPatternSnapshot(link.sourcePatternId)
+    const snapshot = await store.getDerivedSourceSnapshot(patternId)
     if (pattern.value.id !== patternId) return
     if (snapshot) largePatternBackup.value = snapshot
-    else clearDerivedPatternLink()
   },
   { immediate: true },
 )

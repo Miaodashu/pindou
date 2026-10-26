@@ -40,7 +40,7 @@ interface PatternCanvasApi {
     viewMode: PatternViewMode,
     showGrid?: boolean,
     showGuides?: boolean,
-  ) => Promise<Blob>
+  ) => Promise<{ blob: Blob; cellSize: number }>
 }
 
 const store = useEditorStore()
@@ -351,15 +351,17 @@ function download(blob: Blob, name: string) {
 async function exportPng(mode: PatternViewMode) {
   if (!canvas.value) return
   const suffix = mode === 'construction' ? '施工图' : '色块图'
-  download(
-    await canvas.value.exportPng(
-      mode,
-      mode === 'construction' || showGrid.value,
-      showGuides.value,
-    ),
-    safeFileName(`${suffix}.png`),
+  const result = await canvas.value.exportPng(
+    mode,
+    mode === 'construction' || showGrid.value,
+    showGuides.value,
   )
-  notify(`${suffix} PNG 已导出`)
+  download(result.blob, safeFileName(`${suffix}.png`))
+  notify(
+    result.cellSize < 36
+      ? `${suffix} PNG 已按 ${result.cellSize}px/格安全导出`
+      : `${suffix} PNG 已导出`,
+  )
 }
 
 function csvCell(value: string | number) {

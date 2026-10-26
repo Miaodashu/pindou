@@ -117,6 +117,29 @@ describe('sampleImageToGrid', () => {
     expect(sampled.cellFeatures[0]?.lineStrength).toBeGreaterThan(0.15)
   })
 
+  it('keeps at most three source color candidates per cell', () => {
+    const colors = [
+      [12, 12, 12, 255],
+      [240, 32, 32, 255],
+      [32, 220, 64, 255],
+      [32, 64, 240, 255],
+    ] as const
+    const source = image(33, 33, (x, y) => {
+      const quadrant = (x >= 16 ? 1 : 0) + (y >= 16 ? 2 : 0)
+      return colors[quadrant]!
+    })
+
+    const sampled = sampleImageToGrid(
+      source,
+      1,
+      1,
+      computeSourceEdgeMask(source),
+      { sampleSize: 11, contentMode: 'illustration' },
+    )
+
+    expect(sampled.cellFeatures[0]?.candidates).toHaveLength(3)
+  })
+
   it('leaves cells empty when transparent coverage is dominant', () => {
     const source = image(21, 21, (x, y) =>
       x === 10 && y === 10 ? [255, 0, 0, 255] : [0, 0, 0, 0],
