@@ -175,6 +175,8 @@ onBeforeUnmount(() => observer?.disconnect())
     <canvas
       ref="canvas"
       aria-label="生成图纸预览"
+      :data-grid-width="width"
+      :data-grid-height="height"
       @pointermove="updateHover"
       @pointerleave="clearHover"
     />

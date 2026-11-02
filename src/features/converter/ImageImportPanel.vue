@@ -16,6 +16,12 @@ import {
   type ImageContentMode,
 } from '@/core/imageContentMode'
 import type { QuantizeStrategy } from '@/core/quantize'
+import {
+  finalizeSmallGridResult,
+  resolveSmallGridOptimization,
+  smallGridOptimizationOptions,
+  type SmallGridOptimizationMode,
+} from '@/core/smallGridOptimization'
 import type { BeadPalette } from '@/domain/palette/types'
 import type { PatternDocument } from '@/domain/pattern/types'
 import ColorReplaceDialog from '@/features/editor/ColorReplaceDialog.vue'
@@ -66,6 +72,7 @@ const generatedResult = ref<{
   height: number
   cells: number[]
   signature: string
+  optimizationMode: SmallGridOptimizationMode
 }>()
 const generatedCells = computed(() => generatedResult.value?.cells ?? [])
 const previewMode = ref<PatternPreviewMode>('grid')
@@ -93,6 +100,13 @@ const report = ref<{
   shouldRecommendLargerGrid: boolean
   pipelineVersion: ConversionPipelineVersion
 }>()
+const baselineDetailReport = ref<{
+  signature: string
+  detailScore: number
+  recommendedWidth: number
+  recommendedHeight: number
+  shouldRecommendLargerGrid: boolean
+}>()
 
 const physicalSize = computed(() => ({
   width: ((width.value * beadSize.value) / 10).toFixed(1),
@@ -112,14 +126,32 @@ const paletteSignature = computed(() =>
     ]),
   }),
 )
-function buildGenerationSignature(generation: {
+interface GenerationSettings {
   width: number
   height: number
   maxColors: number
   strategy: QuantizeStrategy
   backgroundMode: BackgroundMode
   contentMode: ImageContentMode
-}) {
+}
+
+function buildBaselineSignature(generation: GenerationSettings) {
+  return JSON.stringify({
+    width: generation.width,
+    height: generation.height,
+    maxColors: generation.maxColors,
+    strategy: generation.strategy,
+    backgroundMode: generation.backgroundMode,
+    contentMode: generation.contentMode,
+    palette: paletteSignature.value,
+  })
+}
+
+function buildGenerationSignature(
+  generation: GenerationSettings & {
+    smallGridOptimization: SmallGridOptimizationMode
+  },
+) {
   return JSON.stringify({
     ...generation,
     palette: paletteSignature.value,
@@ -127,6 +159,9 @@ function buildGenerationSignature(generation: {
 }
 const currentContentMode = computed(() =>
   getImageContentModeOption(contentMode.value),
+)
+const appliedSmallGridOptimization = computed<SmallGridOptimizationMode>(
+  () => generatedResult.value?.optimizationMode ?? 'off',
 )
 const generationSignature = computed(() =>
   buildGenerationSignature({
@@ -136,6 +171,7 @@ const generationSignature = computed(() =>
     strategy: strategy.value,
     backgroundMode: backgroundMode.value,
     contentMode: contentMode.value,
+    smallGridOptimization: appliedSmallGridOptimization.value,
   }),
 )
 const resultNeedsRegeneration = computed(
@@ -179,6 +215,11 @@ const detailQualityLabel = computed(() => {
   if (score >= 72) return '基本充足'
   return '建议放大图纸'
 })
+const currentSmallGridOptimization = computed(() =>
+  smallGridOptimizationOptions.find(
+    (option) => option.id === appliedSmallGridOptimization.value,
+  ),
+)
 
 function normalizeGridDimension(value: string, fallback: number) {
   const parsed = Number(value)
@@ -225,13 +266,17 @@ function setFile(event: Event) {
   generatedResult.value = undefined
   croppedSource.value = undefined
   report.value = undefined
+  baselineDetailReport.value = undefined
   status.value = 'idle'
   errorMessage.value = ''
   cropOpen.value = true
   input.value = ''
 }
 
-async function processSource(source: ImageData) {
+async function processSource(
+  source: ImageData,
+  optimizationMode = appliedSmallGridOptimization.value,
+) {
   status.value = 'processing'
   errorMessage.value = ''
   const generation = {
@@ -241,43 +286,72 @@ async function processSource(source: ImageData) {
     strategy: strategy.value,
     backgroundMode: backgroundMode.value,
     contentMode: contentMode.value,
+    smallGridOptimization: optimizationMode,
   }
   const signature = buildGenerationSignature(generation)
+  const baselineSignature = buildBaselineSignature(generation)
+  const plan = resolveSmallGridOptimization(optimizationMode, generation)
   try {
     const processed = await convertImageInWorker(
       source,
-      generation.width,
-      generation.height,
+      plan.processingWidth,
+      plan.processingHeight,
       props.palette,
       {
-        maxColors: generation.maxColors,
-        strategy: generation.strategy,
+        maxColors: plan.maxColors,
+        strategy: plan.strategy,
         backgroundMode: generation.backgroundMode,
-        contentMode: generation.contentMode,
+        contentMode: plan.contentMode,
       },
     )
+    const finalized = finalizeSmallGridResult(
+      Array.from(new Uint16Array(processed.cells)),
+      plan.processingWidth,
+      plan.processingHeight,
+      generation.width,
+      generation.height,
+      processed,
+    )
+    if (optimizationMode === 'off') {
+      baselineDetailReport.value = {
+        signature: baselineSignature,
+        detailScore: processed.detailScore,
+        recommendedWidth: processed.recommendedWidth,
+        recommendedHeight: processed.recommendedHeight,
+        shouldRecommendLargerGrid: processed.shouldRecommendLargerGrid,
+      }
+    }
+    const matchingBaseline =
+      baselineDetailReport.value?.signature === baselineSignature
+        ? baselineDetailReport.value
+        : undefined
     generatedResult.value = {
       width: generation.width,
       height: generation.height,
-      cells: Array.from(new Uint16Array(processed.cells)),
+      cells: finalized.cells,
       signature,
+      optimizationMode,
     }
     report.value = {
       engine:
         processed.engine === 'opencv-wasm' ? 'OpenCV.js / WASM' : 'Canvas 降级',
       averageDeltaE: processed.averageDeltaE,
       maximumDeltaE: processed.maximumDeltaE,
-      lowConfidenceCells: processed.lowConfidenceCells,
-      colorCount: processed.selectedColorIndexes.length,
-      cleanedCells: processed.cleanedCells,
-      structuralChanges: processed.structuralChanges,
-      ditheredCells: processed.ditheredCells,
-      alignmentOffsetX: processed.alignmentOffsetX,
-      alignmentOffsetY: processed.alignmentOffsetY,
-      detailScore: processed.detailScore,
-      recommendedWidth: processed.recommendedWidth,
-      recommendedHeight: processed.recommendedHeight,
-      shouldRecommendLargerGrid: processed.shouldRecommendLargerGrid,
+      lowConfidenceCells: finalized.lowConfidenceCells,
+      colorCount: finalized.colorCount,
+      cleanedCells: finalized.cleanedCells,
+      structuralChanges: finalized.structuralChanges,
+      ditheredCells: finalized.ditheredCells,
+      alignmentOffsetX: finalized.alignmentOffsetX,
+      alignmentOffsetY: finalized.alignmentOffsetY,
+      detailScore: matchingBaseline?.detailScore ?? processed.detailScore,
+      recommendedWidth:
+        matchingBaseline?.recommendedWidth ?? processed.recommendedWidth,
+      recommendedHeight:
+        matchingBaseline?.recommendedHeight ?? processed.recommendedHeight,
+      shouldRecommendLargerGrid:
+        matchingBaseline?.shouldRecommendLargerGrid ??
+        processed.shouldRecommendLargerGrid,
       pipelineVersion: processed.pipelineVersion,
     }
     status.value = 'complete'
@@ -295,7 +369,7 @@ async function cropAndGenerate() {
     const source = await cropper.value.getImageData()
     croppedSource.value = source
     croppedRatio.value = ratioKey.value
-    await processSource(source)
+    await processSource(source, 'off')
   } catch (error) {
     status.value = 'error'
     errorMessage.value =
@@ -309,7 +383,10 @@ async function regenerate() {
     cropOpen.value = true
     return
   }
-  await processSource(croppedSource.value)
+  await processSource(
+    croppedSource.value,
+    resultNeedsRegeneration.value ? 'off' : appliedSmallGridOptimization.value,
+  )
 }
 
 async function applyRecommendedSize() {
@@ -322,6 +399,30 @@ async function applyRecommendedSize() {
   width.value = report.value.recommendedWidth
   height.value = report.value.recommendedHeight
   await regenerate()
+}
+
+async function optimizeSmallGrid(
+  mode: Exclude<SmallGridOptimizationMode, 'off'>,
+) {
+  if (
+    status.value === 'processing' ||
+    resultNeedsRegeneration.value ||
+    !croppedSource.value
+  ) {
+    return
+  }
+  await processSource(croppedSource.value, mode)
+}
+
+async function restoreStandardResult() {
+  if (
+    status.value === 'processing' ||
+    resultNeedsRegeneration.value ||
+    !croppedSource.value
+  ) {
+    return
+  }
+  await processSource(croppedSource.value, 'off')
 }
 
 function formatGridOffset(value: number) {
@@ -365,6 +466,45 @@ function replaceCandidate(payload: {
   }
   replaceFrom.value = undefined
 }
+
+function syncGeneratedResultFromPattern() {
+  const result = generatedResult.value
+  if (!result) return
+  if (
+    props.pattern.width < 1 ||
+    props.pattern.height < 1 ||
+    props.pattern.cells.length !== props.pattern.width * props.pattern.height
+  ) {
+    return
+  }
+
+  width.value = props.pattern.width
+  height.value = props.pattern.height
+  const cells = [...props.pattern.cells]
+  generatedResult.value = {
+    ...result,
+    width: props.pattern.width,
+    height: props.pattern.height,
+    cells,
+    signature: buildGenerationSignature({
+      width: props.pattern.width,
+      height: props.pattern.height,
+      maxColors: maxColors.value,
+      strategy: strategy.value,
+      backgroundMode: backgroundMode.value,
+      contentMode: contentMode.value,
+      smallGridOptimization: result.optimizationMode,
+    }),
+  }
+  if (report.value) {
+    report.value = {
+      ...report.value,
+      colorCount: new Set(cells.filter((cell) => cell > 0)).size,
+    }
+  }
+}
+
+defineExpose({ syncGeneratedResultFromPattern })
 
 watch(ratioKey, () => {
   if (croppedRatio.value && croppedRatio.value !== ratioKey.value) {
@@ -595,6 +735,53 @@ onBeforeUnmount(() => {
         </article>
       </div>
 
+      <section
+        v-if="generatedCells.length"
+        class="small-grid-optimizer"
+        aria-labelledby="small-grid-optimizer-title"
+      >
+        <header>
+          <span class="optimizer-icon"
+            ><Sparkles :size="19" aria-hidden="true"
+          /></span>
+          <div>
+            <strong id="small-grid-optimizer-title">小图优化</strong>
+            <p>
+              小尺寸图纸效果不理想？可以换一种保真方式，不会改变最终网格尺寸。
+            </p>
+          </div>
+          <span v-if="currentSmallGridOptimization" class="active-profile">
+            已应用：{{ currentSmallGridOptimization.label }}
+          </span>
+        </header>
+        <div class="small-grid-options">
+          <button
+            v-for="(option, index) in smallGridOptimizationOptions"
+            :key="option.id"
+            type="button"
+            :class="{ active: appliedSmallGridOptimization === option.id }"
+            :disabled="status === 'processing' || resultNeedsRegeneration"
+            :aria-pressed="appliedSmallGridOptimization === option.id"
+            @click="optimizeSmallGrid(option.id)"
+          >
+            <span>
+              <strong>{{ option.label }}</strong>
+              <em v-if="index === 0">推荐</em>
+            </span>
+            <small>{{ option.description }}</small>
+          </button>
+          <button
+            v-if="appliedSmallGridOptimization !== 'off'"
+            type="button"
+            class="restore-standard"
+            :disabled="status === 'processing' || resultNeedsRegeneration"
+            @click="restoreStandardResult"
+          >
+            恢复标准结果
+          </button>
+        </div>
+      </section>
+
       <div v-else class="waiting-preview">
         <img :src="previewUrl" alt="待生成图片" />
         <div>
@@ -640,7 +827,11 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="report" class="generation-report">
           <div class="quality-heading">
-            <strong>智能保真转换</strong>
+            <strong>
+              智能保真转换<span v-if="currentSmallGridOptimization">
+                · {{ currentSmallGridOptimization.label }}</span
+              >
+            </strong>
             <span
               class="quality-badge"
               :class="{ warning: report.shouldRecommendLargerGrid }"
@@ -902,7 +1093,8 @@ onBeforeUnmount(() => {
 .waiting-preview,
 .comparison-card,
 .generation-settings,
-.usage-rail {
+.usage-rail,
+.small-grid-optimizer {
   border: 1px solid var(--border);
   border-radius: 20px;
   background: rgb(255 253 253 / 94%);
@@ -1073,6 +1265,110 @@ onBeforeUnmount(() => {
   grid-template-columns: 1fr 1fr;
   gap: 14px;
   margin-top: 16px;
+}
+
+.small-grid-optimizer {
+  margin-top: 14px;
+  padding: 16px 18px;
+}
+
+.small-grid-optimizer > header {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.optimizer-icon {
+  display: grid;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 12px;
+  color: #76570b;
+  background: #fff2bd;
+}
+
+.small-grid-optimizer header div {
+  min-width: 0;
+}
+
+.small-grid-optimizer header p {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.active-profile {
+  flex: none;
+  margin-left: auto;
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: #376f51;
+  background: #e7f4eb;
+  font-size: 0.66rem;
+  font-weight: 800;
+}
+
+.small-grid-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 9px;
+  margin-top: 13px;
+}
+
+.small-grid-options button {
+  display: grid;
+  min-width: 0;
+  padding: 11px 12px;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: white;
+  text-align: left;
+  cursor: pointer;
+}
+
+.small-grid-options button > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.small-grid-options button em {
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: #76570b;
+  background: #fff2bd;
+  font-size: 0.58rem;
+  font-style: normal;
+}
+
+.small-grid-options button small {
+  color: var(--text-muted);
+  font-size: 0.66rem;
+  line-height: 1.45;
+}
+
+.small-grid-options button.active {
+  border-color: #b98d19;
+  background: #fffbec;
+  box-shadow: inset 0 0 0 1px rgb(185 141 25 / 18%);
+}
+
+.small-grid-options button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.small-grid-options .restore-standard {
+  align-content: center;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-align: center;
 }
 
 .comparison-card {
@@ -1547,6 +1843,14 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
+  .small-grid-options {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .small-grid-options .restore-standard {
+    grid-column: 1 / -1;
+  }
+
   .crop-modal-body {
     grid-template-columns: 1fr;
     overflow-y: auto;
@@ -1586,6 +1890,23 @@ onBeforeUnmount(() => {
 
   .usage-title {
     border-right: 0;
+  }
+
+  .small-grid-optimizer > header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .active-profile {
+    margin-left: 49px;
+  }
+
+  .small-grid-options {
+    grid-template-columns: 1fr;
+  }
+
+  .small-grid-options .restore-standard {
+    grid-column: auto;
   }
 
   .generation-report {

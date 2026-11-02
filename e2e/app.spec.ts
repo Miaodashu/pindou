@@ -129,10 +129,130 @@ test('converts an imported image with OpenCV WebAssembly', async ({ page }) => {
   await expect(page.getByText(/OpenCV\.js \/ WASM ·/)).toBeVisible({
     timeout: 30_000,
   })
+  await expect(page.getByText('小图优化', { exact: true })).toBeVisible()
+  const autoClarity = page.getByRole('button', { name: /自动清晰/ })
+  await autoClarity.click()
+  await expect(autoClarity).toHaveAttribute('aria-pressed', 'true', {
+    timeout: 30_000,
+  })
+  await expect(page.getByText(/智能保真转换 · 自动清晰/)).toBeVisible()
+  const outlinePriority = page.getByRole('button', { name: /轮廓优先/ })
+  await outlinePriority.click()
+  await expect(outlinePriority).toHaveAttribute('aria-pressed', 'true', {
+    timeout: 30_000,
+  })
+  await expect(page.getByText(/智能保真转换 · 轮廓优先/)).toBeVisible()
+  const blockPriority = page.getByRole('button', { name: /色块优先/ })
+  await blockPriority.click()
+  await expect(blockPriority).toHaveAttribute('aria-pressed', 'true', {
+    timeout: 30_000,
+  })
+  await expect(page.getByText(/智能保真转换 · 色块优先/)).toBeVisible()
+  await page.getByRole('button', { name: '恢复标准结果' }).click()
+  await expect(blockPriority).toHaveAttribute('aria-pressed', 'false', {
+    timeout: 30_000,
+  })
+  await expect(
+    page.locator('.generation-report .quality-heading > strong'),
+  ).toHaveText('智能保真转换')
+  await autoClarity.click()
+  await expect(autoClarity).toHaveAttribute('aria-pressed', 'true', {
+    timeout: 30_000,
+  })
+  await page.getByLabel('颜色上限').first().selectOption('16')
+  await expect(page.getByText(/生成参数已修改/)).toBeVisible()
+  await page.getByRole('button', { name: '重新生成' }).click()
+  await expect(autoClarity).toHaveAttribute('aria-pressed', 'false', {
+    timeout: 30_000,
+  })
+  await expect(
+    page.locator('.generation-report .quality-heading > strong'),
+  ).toHaveText('智能保真转换')
   await expect(page.getByLabel('重新上传原图')).toBeVisible()
   const preview = page.getByLabel('生成图纸预览')
   await preview.hover({ position: { x: 12, y: 12 } })
   await expect(page.getByText(/格同色区域/)).toBeVisible()
+
+  const outputWidth = page.getByLabel('输出网格宽度')
+  await outputWidth.fill(String(Number(await outputWidth.inputValue()) + 1))
+  await outputWidth.press('Enter')
+  await expect(page.getByText(/生成参数已修改/)).toBeVisible()
+  await expect(autoClarity).toBeDisabled()
+  await expect(outlinePriority).toBeDisabled()
+  await expect(blockPriority).toBeDisabled()
+})
+
+test('refreshes the generated preview after full-screen refinement closes', async ({
+  page,
+}) => {
+  await page.goto('/editor')
+  await page.locator('input[type="file"][accept*="image/png"]').setInputFiles({
+    name: 'preview-sync.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlH0s8AAAAASUVORK5CYII=',
+      'base64',
+    ),
+  })
+  const cropDialog = page.getByRole('dialog', {
+    name: '裁切图片并设置生成策略',
+  })
+  await cropDialog.getByRole('button', { name: '生成图纸' }).click()
+
+  await expect(page.getByLabel('生成图纸预览')).toBeVisible({
+    timeout: 30_000,
+  })
+  await page.getByRole('button', { name: '全屏精修' }).click()
+  await chooseColor(page, 'F3 红色系 F3')
+  const editorCanvas = page.getByLabel('拼豆图纸画布')
+  await editorCanvas.click({ position: { x: 12, y: 12 } })
+  const refinedPixel = await editorCanvas.evaluate((element) => {
+    const target = element as HTMLCanvasElement
+    const scale = target.width / target.clientWidth
+    const context = target.getContext('2d')
+    return Array.from(
+      context?.getImageData(
+        Math.round(12 * scale),
+        Math.round(12 * scale),
+        1,
+        1,
+      ).data ?? [],
+    ).slice(0, 3)
+  })
+  expect(refinedPixel).toEqual([247, 73, 65])
+  await page.getByRole('button', { name: '完成' }).click()
+
+  await page.getByLabel('生成图纸预览').hover({ position: { x: 4, y: 4 } })
+  await expect(page.locator('.hover-summary strong')).toHaveText('F3')
+  const usageRail = page.locator('.usage-rail')
+  await expect(usageRail.getByText('F3', { exact: true })).toBeVisible()
+  await expect(
+    usageRail.locator('.generation-report').getByText('2 种颜色'),
+  ).toBeVisible()
+
+  await page.getByRole('button', { name: '全屏精修' }).click()
+  await chooseColor(page, 'C5 蓝青系 C5')
+  await page.getByLabel('拼豆图纸画布').click({ position: { x: 12, y: 12 } })
+  await page.getByRole('button', { name: '关闭精修' }).click()
+  await page.getByLabel('生成图纸预览').hover({ position: { x: 4, y: 4 } })
+  await expect(page.locator('.hover-summary strong')).toHaveText('C5')
+  await expect(usageRail.getByText('C5', { exact: true })).toBeVisible()
+  await expect(usageRail.getByText('F3', { exact: true })).toHaveCount(0)
+
+  await page.getByRole('button', { name: '全屏精修' }).click()
+  await page.getByText('大图转小图', { exact: true }).click()
+  await page.getByLabel('小尺寸图纸宽度').fill('20')
+  await page.getByLabel('小尺寸图纸高度').fill('20')
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: '生成小尺寸副本' }).click()
+  await expect(page.getByText(/已生成 20 × 20 小尺寸副本/)).toBeVisible()
+  await page.getByRole('button', { name: '完成' }).click()
+
+  const preview = page.getByLabel('生成图纸预览')
+  await expect(preview).toHaveAttribute('data-grid-width', '20')
+  await expect(preview).toHaveAttribute('data-grid-height', '20')
+  await expect(page.getByLabel('输出网格宽度')).toHaveValue('20')
+  await expect(page.getByLabel('输出网格高度')).toHaveValue('20')
 })
 
 test('imports a measured palette without exposing project export', async ({

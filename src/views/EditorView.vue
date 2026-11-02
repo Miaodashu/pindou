@@ -44,6 +44,10 @@ interface PatternCanvasApi {
   ) => Promise<{ blob: Blob; cellSize: number }>
 }
 
+interface ImageImportPanelApi {
+  syncGeneratedResultFromPattern: () => void
+}
+
 const store = useEditorStore()
 const {
   pattern,
@@ -67,6 +71,7 @@ const {
 } = storeToRefs(store)
 
 const canvas = ref<PatternCanvasApi>()
+const imageImportPanel = ref<ImageImportPanelApi>()
 const canvasScroll = ref<HTMLDivElement>()
 const editorOpen = ref(false)
 const paletteOpen = ref(false)
@@ -163,6 +168,7 @@ async function openEditor() {
 }
 
 function closeEditor() {
+  imageImportPanel.value?.syncGeneratedResultFromPattern()
   editorOpen.value = false
   paletteOpen.value = false
   selection.value = []
@@ -571,6 +577,7 @@ onBeforeUnmount(() => {
     </header>
 
     <ImageImportPanel
+      ref="imageImportPanel"
       :pattern="pattern"
       :palette="palette"
       :inventory-quantities="inventoryQuantities"
